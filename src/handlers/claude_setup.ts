@@ -1,7 +1,6 @@
 import { logWithContext } from "../log";
-import { createGitHubConfigKV } from "../kv_storage";
 
-export async function handleClaudeSetup(request: Request, origin: string, env: { GITHUB_CONFIG: KVNamespace }): Promise<Response> {
+export async function handleClaudeSetup(request: Request, origin: string, env?: any): Promise<Response> {
   logWithContext('CLAUDE_SETUP', 'Handling Claude setup request', {
     method: request.method,
     origin
@@ -25,13 +24,11 @@ export async function handleClaudeSetup(request: Request, origin: string, env: {
         throw new Error('Invalid Anthropic API key format');
       }
 
-      // Store the API key securely in KV
-      logWithContext('CLAUDE_SETUP', 'Storing API key in KV');
-
-      const gitHubConfigKV = createGitHubConfigKV(env);
-      await gitHubConfigKV.storeClaudeApiKey(apiKey);
-
-      logWithContext('CLAUDE_SETUP', 'API key stored in KV successfully');
+      // TODO: Implement Claude API key storage in KV
+      logWithContext('CLAUDE_SETUP', 'API key storage not implemented for KV yet');
+      
+      // For now, just acknowledge the key was received
+      logWithContext('CLAUDE_SETUP', 'Claude API key setup acknowledged (storage pending)');
 
       return new Response(`
 <!DOCTYPE html>

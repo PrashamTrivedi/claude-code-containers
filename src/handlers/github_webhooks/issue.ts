@@ -41,9 +41,9 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any)
   }
 
   // Get Claude API key from secure storage
-  logWithContext('CLAUDE_ROUTING', 'Retrieving Claude API key from KV');
+  logWithContext('CLAUDE_ROUTING', 'Skipping Claude API key retrieval (KV integration pending)');
 
-  const claudeApiKey = await gitHubConfigKV.getClaudeApiKey();
+  const claudeApiKey = null; // TODO: Implement Claude API key retrieval from KV
 
   logWithContext('CLAUDE_ROUTING', 'Claude API key check', {
     hasApiKey: !!claudeApiKey
