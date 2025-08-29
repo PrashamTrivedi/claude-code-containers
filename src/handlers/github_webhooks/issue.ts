@@ -1,65 +1,66 @@
-import { GitHubAPI } from "../../github_client";
-import { logWithContext } from "../../log";
-import { containerFetch, getRouteFromRequest } from "../../fetch";
+import {GitHubAPI} from "../../github_client"
+import {logWithContext} from "../../log"
+import {containerFetch, getRouteFromRequest} from "../../fetch"
+import {generateInstallationToken} from '../../kv_storage'
 
 // Simplified container response interface
 interface ContainerResponse {
-  success: boolean;
-  message: string;
-  error?: string;
+  success: boolean
+  message: string
+  error?: string
 }
 
 // Route GitHub issue to Claude Code container
 async function routeToClaudeCodeContainer(issue: any, repository: any, env: any): Promise<void> {
-  const containerName = `claude-issue-${issue.id}`;
+  const containerName = `claude-issue-${issue.id}`
 
   logWithContext('CLAUDE_ROUTING', 'Routing issue to Claude Code container', {
     issueNumber: issue.number,
     issueId: issue.id,
     containerName,
-    repository: repository.full_name
-  });
+    repository: repository.full_name,
+    issue
+  })
 
   // Create unique container for this issue
-  const id = env.MY_CONTAINER.idFromName(containerName);
-  const container = env.MY_CONTAINER.get(id);
+  const id = env.MY_CONTAINER.idFromName(containerName)
+  const container = env.MY_CONTAINER.get(id)
 
   // Get installation token using KV credentials
-  logWithContext('CLAUDE_ROUTING', 'Generating installation token from KV credentials');
-  
-  // Import generateInstallationToken from kv_storage
-  const { generateInstallationToken } = await import('../../kv_storage');
-  
+  logWithContext('CLAUDE_ROUTING', 'Generating installation token from KV credentials', repository)
+
+
   // We need an installation ID to generate the token
   // This should come from the webhook payload or be stored separately
-  const installationId = repository.installation?.id?.toString();
-  
-  let installationToken = null;
+  const installationId = repository.installation?.id?.toString()
+
+  let installationToken = null
   if (installationId) {
-    installationToken = await generateInstallationToken(env, installationId);
+    installationToken = await generateInstallationToken(env, installationId)
   }
 
   logWithContext('CLAUDE_ROUTING', 'Installation token retrieved', {
-    hasToken: !!installationToken
-  });
+    hasToken: !!installationToken,
+    installationId
+  })
 
   if (!installationToken) {
-    logWithContext('CLAUDE_ROUTING', 'Failed to generate installation token');
-    throw new Error('Failed to generate GitHub installation token');
+    logWithContext('CLAUDE_ROUTING', 'Failed to generate installation token')
+    throw new Error('Failed to generate GitHub installation token')
   }
 
   // Get Claude API key from secure storage
-  logWithContext('CLAUDE_ROUTING', 'Skipping Claude API key retrieval (KV integration pending)');
+  logWithContext('CLAUDE_ROUTING', 'Skipping Claude API key retrieval (KV integration pending)')
 
-  const claudeApiKey = null; // TODO: Implement Claude API key retrieval from KV
+  const claudeApiKey = null // TODO: Implement Claude API key retrieval from KV
 
   logWithContext('CLAUDE_ROUTING', 'Claude API key check', {
     hasApiKey: !!claudeApiKey
-  });
+  })
 
   if (!claudeApiKey) {
-    logWithContext('CLAUDE_ROUTING', 'Claude API key not configured');
-    throw new Error('Claude API key not configured. Please visit /claude-setup first.');
+    logWithContext('CLAUDE_ROUTING', 'Claude API key not configured')
+    throw new Error('Claude API key not configured. Please visit /claude-setup first.')
   }
 
   // Prepare environment variables for the container
@@ -75,13 +76,13 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any)
     REPOSITORY_NAME: repository.full_name,
     ISSUE_AUTHOR: issue.user.login,
     MESSAGE: `Processing issue #${issue.number}: ${issue.title}`
-  };
+  }
 
   // Start Claude Code processing by calling the container
   logWithContext('CLAUDE_ROUTING', 'Starting Claude Code container processing', {
     containerName,
     issueId: issueContext.ISSUE_ID
-  });
+  })
 
   try {
     const response = await containerFetch(container, new Request('http://internal/process-issue', {
@@ -93,55 +94,55 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any)
     }), {
       containerName,
       route: '/process-issue'
-    });
+    })
 
     logWithContext('CLAUDE_ROUTING', 'Claude Code container response', {
       status: response.status,
       statusText: response.statusText
-    });
+    })
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error response');
+      const errorText = await response.text().catch(() => 'Unable to read error response')
       logWithContext('CLAUDE_ROUTING', 'Container returned error', {
         status: response.status,
         errorText
-      });
-      throw new Error(`Container returned status ${response.status}: ${errorText}`);
+      })
+      throw new Error(`Container returned status ${response.status}: ${errorText}`)
     }
 
     // Parse container response
-    const containerResponse: ContainerResponse = await response.json();
-    
+    const containerResponse: ContainerResponse = await response.json()
+
     logWithContext('CLAUDE_ROUTING', 'Container response parsed', {
       success: containerResponse.success,
       message: containerResponse.message,
       hasError: !!containerResponse.error
-    });
+    })
 
     if (containerResponse.success) {
       logWithContext('CLAUDE_ROUTING', 'Container processing completed successfully', {
         message: containerResponse.message
-      });
+      })
     } else {
       logWithContext('CLAUDE_ROUTING', 'Container processing failed', {
         error: containerResponse.error
-      });
+      })
     }
 
   } catch (error) {
     logWithContext('CLAUDE_ROUTING', 'Failed to process Claude Code response', {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined
-    });
-    throw error;
+    })
+    throw error
   }
 }
 
 // Handle issues events
 export async function handleIssuesEvent(data: any, env: any): Promise<Response> {
-  const action = data.action;
-  const issue = data.issue;
-  const repository = data.repository;
+  const action = data.action
+  const issue = data.issue
+  const repository = data.repository
 
   logWithContext('ISSUES_EVENT', 'Processing issue event', {
     action,
@@ -150,7 +151,7 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
     repository: repository.full_name,
     author: issue.user?.login,
     labels: issue.labels?.map((label: any) => label.name) || []
-  });
+  })
 
   // TODO: Update GitHubAPI to work with KV storage instead of gitHubConfigKV
   // For now, we'll skip the GitHubAPI creation
@@ -158,33 +159,79 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
 
   // Handle new issue creation with Claude Code
   if (action === 'opened') {
-    logWithContext('ISSUES_EVENT', 'Handling new issue creation');
+    logWithContext('ISSUES_EVENT', 'Handling new issue creation')
 
     try {
       // TODO: Implement GitHub comment posting with KV credentials
-      logWithContext('ISSUES_EVENT', 'Skipping initial acknowledgment comment (needs GitHub API update for KV)');
+      logWithContext('ISSUES_EVENT', 'Skipping initial acknowledgment comment (needs GitHub API update for KV)')
 
       // Route to Claude Code container for processing
-      logWithContext('ISSUES_EVENT', 'Routing to Claude Code container');
-      await routeToClaudeCodeContainer(issue, repository, env);
+      logWithContext('ISSUES_EVENT', 'Routing to Claude Code container')
+      await routeToClaudeCodeContainer(issue, repository, env)
 
-      logWithContext('ISSUES_EVENT', 'Issue routed to Claude Code container successfully');
+      logWithContext('ISSUES_EVENT', 'Issue routed to Claude Code container successfully')
 
     } catch (error) {
       logWithContext('ISSUES_EVENT', 'Failed to process new issue', {
         error: error instanceof Error ? error.message : String(error),
         issueNumber: issue.number
-      });
+      })
 
       // TODO: Implement error comment posting with KV credentials
-      logWithContext('ISSUES_EVENT', 'Skipping error comment (needs GitHub API update for KV)');
+      logWithContext('ISSUES_EVENT', 'Skipping error comment (needs GitHub API update for KV)')
+    }
+  }
+
+  // Handle issue edits (title/description updates)
+  if (action === 'edited') {
+    const changes = data.changes
+
+    logWithContext('ISSUES_EVENT', 'Handling issue edit', {
+      issueNumber: issue.number,
+      hasChanges: !!changes,
+      changedFields: changes ? Object.keys(changes) : [],
+      issue
+    })
+
+    // Check if title or body was changed
+    const titleChanged = changes?.title?.from !== undefined
+    const bodyChanged = changes?.body?.from !== undefined
+
+    if (titleChanged || bodyChanged) {
+      logWithContext('ISSUES_EVENT', 'Issue title or description changed - triggering Claude Code analysis', {
+        titleChanged,
+        bodyChanged,
+        oldTitle: changes?.title?.from,
+        newTitle: issue.title,
+        oldBodyPreview: changes?.body?.from ? changes.body.from.substring(0, 100) + '...' : null,
+        newBodyPreview: issue.body ? issue.body.substring(0, 100) + '...' : null
+      })
+
+      try {
+        // Route updated issue to Claude Code container for re-analysis
+        await routeToClaudeCodeContainer(issue, repository, env)
+
+        logWithContext('ISSUES_EVENT', 'Updated issue routed to Claude Code container successfully')
+
+      } catch (error) {
+        logWithContext('ISSUES_EVENT', 'Failed to process issue update', {
+          error: error instanceof Error ? error.message : String(error),
+          issueNumber: issue.number,
+          titleChanged,
+          bodyChanged
+        })
+      }
+    } else {
+      logWithContext('ISSUES_EVENT', 'Issue edited but no title/description changes detected', {
+        changedFields: changes ? Object.keys(changes) : []
+      })
     }
   }
 
   // For other issue actions, use the standard container routing
-  const containerName = `repo-${repository.id}`;
-  const id = env.MY_CONTAINER.idFromName(containerName);
-  const container = env.MY_CONTAINER.get(id);
+  const containerName = `repo-${repository.id}`
+  const id = env.MY_CONTAINER.idFromName(containerName)
+  const container = env.MY_CONTAINER.get(id)
 
   const webhookPayload = {
     event: 'issues',
@@ -193,7 +240,7 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
     issue_number: issue.number,
     issue_title: issue.title,
     issue_author: issue.user.login
-  };
+  }
 
   await containerFetch(container, new Request('http://internal/webhook', {
     method: 'POST',
@@ -204,7 +251,7 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
   }), {
     containerName,
     route: '/webhook'
-  });
+  })
 
-  return new Response('Issues event processed', { status: 200 });
+  return new Response('Issues event processed', {status: 200})
 }
