@@ -2,7 +2,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "claude-code-containers",
 	"main": "src/index.ts",
-	"compatibility_date": "2025-05-23",
+	"compatibility_date": "2025-08-23",
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
@@ -35,12 +35,8 @@
 	],
 	"kv_namespaces": [
 		{
-			"binding": "TOKEN_CACHE",
-			"id": "your-prod-token-cache-id"
-		},
-		{
 			"binding": "GITHUB_CONFIG",
-			"id": "cbbd79b3c302416e812474f4416fb663"
+			"id": "04d6303aa26649e7ab79a8184d074ba9"
 		}
 	]
 }
