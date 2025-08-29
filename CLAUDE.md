@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm run dev          # Start local development server (http://localhost:8787)
 npm run deploy       # Deploy to Cloudflare Workers
-npm run cf-typegen   # Generate TypeScript types after wrangler config changes
+npm run cf-typegen   # Generate TypeScript types after wrangler config changes.
 ```
 
-**⚠️ Important:** Always run `npm run cf-typegen` after making changes to `wrangler.jsonc`. This regenerates the TypeScript types and updates `worker-configuration.d.ts` to match your bindings and configuration.
+**⚠️ Important:** Always run `npm run cf-typegen` after making changes to `wrangler.jsonc`. This regenerates the TypeScript types and updates `worker-configuration.d.ts` to match your bindings and configuration. This is more accurate then updating `worker-configuration.d.ts` manually.
 
 ### Wrangler CLI Commands
 

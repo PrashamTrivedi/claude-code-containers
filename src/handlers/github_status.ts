@@ -1,49 +1,64 @@
+import { getDecryptedGitHubCredentials, isGitHubAppConfigured, getGitHubConfigFromKV } from "../kv_storage";
+import { logWithContext } from "../log";
+
 export async function handleGitHubStatus(_request: Request, env: any): Promise<Response> {
-  const url = new URL(_request.url);
-  const appId = url.searchParams.get('app_id');
-
-  if (!appId) {
-    return new Response(JSON.stringify({ error: 'Missing app_id parameter' }), {
-      headers: { 'Content-Type': 'application/json' },
-      status: 400
-    });
-  }
-
   try {
-    const id = env.GITHUB_APP_CONFIG.idFromName(appId);
-    const configDO = env.GITHUB_APP_CONFIG.get(id);
-
-    const response = await configDO.fetch(new Request('http://internal/get'));
-    const config = await response.json() as GitHubAppConfig | null;
-
-    if (!config) {
-      return new Response(JSON.stringify({ error: 'No configuration found for this app ID' }), {
+    logWithContext('GITHUB_STATUS', 'Checking GitHub app status');
+    
+    const isConfigured = await isGitHubAppConfigured(env);
+    if (!isConfigured) {
+      logWithContext('GITHUB_STATUS', 'No GitHub app configuration found');
+      return new Response(JSON.stringify({ 
+        configured: false,
+        error: 'No GitHub app configuration found' 
+      }), {
         headers: { 'Content-Type': 'application/json' },
         status: 404
       });
     }
 
-    // Return safe information (without sensitive data)
-    const safeConfig = {
-      appId: config.appId,
-      owner: config.owner,
-      repositories: config.repositories,
-      permissions: config.permissions,
-      events: config.events,
-      createdAt: config.createdAt,
-      lastWebhookAt: config.lastWebhookAt,
-      webhookCount: config.webhookCount,
-      installationId: config.installationId,
-      hasCredentials: !!(config.privateKey && config.webhookSecret)
+    const credentials = await getDecryptedGitHubCredentials(env);
+    const rawConfig = await getGitHubConfigFromKV(env);
+    
+    if (!credentials || !rawConfig) {
+      logWithContext('GITHUB_STATUS', 'Could not retrieve GitHub configuration');
+      return new Response(JSON.stringify({ 
+        configured: true,
+        error: 'Could not retrieve configuration details' 
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 500
+      });
+    }
+
+    const status = {
+      configured: true,
+      appId: credentials.appId,
+      name: credentials.name || 'Claude Code on Cloudflare',
+      owner: credentials.owner,
+      installationId: credentials.installationId,
+      htmlUrl: credentials.htmlUrl,
+      storage: 'KV',
+      lastUpdated: new Date().toISOString()
     };
 
-    return new Response(JSON.stringify(safeConfig, null, 2), {
+    logWithContext('GITHUB_STATUS', 'GitHub app status retrieved successfully', {
+      appId: credentials.appId,
+      hasInstallationId: !!credentials.installationId
+    });
+
+    return new Response(JSON.stringify(status, null, 2), {
       headers: { 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
-    console.error('Error fetching GitHub status:', error);
-    return new Response(JSON.stringify({ error: 'Internal server error' }), {
+    logWithContext('GITHUB_STATUS', 'Error fetching GitHub status', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return new Response(JSON.stringify({ 
+      configured: false,
+      error: 'Internal server error' 
+    }), {
       headers: { 'Content-Type': 'application/json' },
       status: 500
     });

@@ -22,10 +22,6 @@
 			{
 				"class_name": "MyContainer",
 				"name": "MY_CONTAINER"
-			},
-			{
-				"class_name": "GitHubAppConfigDO",
-				"name": "GITHUB_APP_CONFIG"
 			}
 		]
 	},
@@ -35,12 +31,16 @@
 				"MyContainer"
 			],
 			"tag": "v1"
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "TOKEN_CACHE",
+			"id": "your-prod-token-cache-id"
 		},
 		{
-			"new_sqlite_classes": [
-				"GitHubAppConfigDO"
-			],
-			"tag": "v2"
+			"binding": "GITHUB_CONFIG",
+			"id": "cbbd79b3c302416e812474f4416fb663"
 		}
 	]
 }

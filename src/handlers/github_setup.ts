@@ -1,4 +1,5 @@
 import { logWithContext } from "../log";
+import { isGitHubAppConfigured, getDecryptedGitHubCredentials } from "../kv_storage";
 
 function generateAppManifest(workerDomain: string): GitHubAppManifest {
   return {
@@ -23,8 +24,78 @@ function generateAppManifest(workerDomain: string): GitHubAppManifest {
   };
 }
 
-export async function handleGitHubSetup(_request: Request, origin: string): Promise<Response> {
+export async function handleGitHubSetup(_request: Request, origin: string, env?: any): Promise<Response> {
   logWithContext('GITHUB_SETUP', 'Handling GitHub setup request', { origin });
+
+  // Check if GitHub app is already configured in KV
+  if (env) {
+    const isAlreadyConfigured = await isGitHubAppConfigured(env);
+
+    if (isAlreadyConfigured) {
+      logWithContext('GITHUB_SETUP', 'GitHub app already configured, showing status');
+      
+      const credentials = await getDecryptedGitHubCredentials(env);
+      
+      if (credentials) {
+        const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GitHub App Already Configured</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 40px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .success { color: #28a745; }
+        .config-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .install-btn {
+            display: inline-block;
+            background: #0969da;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="success">GitHub App Already Configured!</h1>
+    
+    <div class="config-info">
+        <h3>Current Configuration</h3>
+        <p><strong>App ID:</strong> ${credentials.appId}</p>
+        <p><strong>Owner:</strong> ${credentials.owner?.login || 'Unknown'}</p>
+        <p><strong>Installation ID:</strong> ${credentials.installationId || 'Not installed'}</p>
+        <p><strong>App Name:</strong> ${credentials.name || 'Claude Code on Cloudflare'}</p>
+    </div>
+
+    <p>Your GitHub app is already set up and ready to receive webhooks.</p>
+    
+    ${credentials.htmlUrl ? `<a href="${credentials.htmlUrl}/installations/new" class="install-btn">Install App on Repositories</a>` : ''}
+    
+    <p><a href="/gh-status">View Detailed Status</a></p>
+</body>
+</html>`;
+    
+        return new Response(html, {
+          headers: { 'Content-Type': 'text/html' }
+        });
+      }
+    }
+  }
 
   const webhookUrl = `${origin}/webhooks/github`;
   const manifest = generateAppManifest(origin);

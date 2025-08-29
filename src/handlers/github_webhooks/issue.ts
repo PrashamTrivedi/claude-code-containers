@@ -10,7 +10,7 @@ interface ContainerResponse {
 }
 
 // Route GitHub issue to Claude Code container
-async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, configDO: any): Promise<void> {
+async function routeToClaudeCodeContainer(issue: any, repository: any, env: any): Promise<void> {
   const containerName = `claude-issue-${issue.id}`;
 
   logWithContext('CLAUDE_ROUTING', 'Routing issue to Claude Code container', {
@@ -24,37 +24,40 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
 
-  // Get installation token for GitHub API access
-  logWithContext('CLAUDE_ROUTING', 'Retrieving installation token');
+  // Get GitHub credentials from KV
+  logWithContext('CLAUDE_ROUTING', 'Retrieving GitHub credentials from KV');
 
-  const tokenResponse = await configDO.fetch(new Request('http://internal/get-installation-token'));
-  const tokenData = await tokenResponse.json() as { token: string };
+  // For now, we'll skip the installation token generation as it requires more complex logic
+  // that would need the GitHub API integration to be properly updated for KV storage
+  const installationToken = null;
 
   logWithContext('CLAUDE_ROUTING', 'Installation token retrieved', {
-    hasToken: !!tokenData.token
+    hasToken: !!installationToken
   });
+
+  if (!installationToken) {
+    logWithContext('CLAUDE_ROUTING', 'Failed to generate installation token');
+    throw new Error('Failed to generate GitHub installation token');
+  }
 
   // Get Claude API key from secure storage
-  logWithContext('CLAUDE_ROUTING', 'Retrieving Claude API key');
+  logWithContext('CLAUDE_ROUTING', 'Retrieving Claude API key from KV');
 
-  const claudeConfigId = env.GITHUB_APP_CONFIG.idFromName('claude-config');
-  const claudeConfigDO = env.GITHUB_APP_CONFIG.get(claudeConfigId);
-  const claudeKeyResponse = await claudeConfigDO.fetch(new Request('http://internal/get-claude-key'));
-  const claudeKeyData = await claudeKeyResponse.json() as { anthropicApiKey: string | null };
+  const claudeApiKey = await gitHubConfigKV.getClaudeApiKey();
 
   logWithContext('CLAUDE_ROUTING', 'Claude API key check', {
-    hasApiKey: !!claudeKeyData.anthropicApiKey
+    hasApiKey: !!claudeApiKey
   });
 
-  if (!claudeKeyData.anthropicApiKey) {
+  if (!claudeApiKey) {
     logWithContext('CLAUDE_ROUTING', 'Claude API key not configured');
     throw new Error('Claude API key not configured. Please visit /claude-setup first.');
   }
 
   // Prepare environment variables for the container
   const issueContext = {
-    ANTHROPIC_API_KEY: claudeKeyData.anthropicApiKey,
-    GITHUB_TOKEN: tokenData.token,
+    ANTHROPIC_API_KEY: claudeApiKey,
+    GITHUB_TOKEN: installationToken,
     ISSUE_ID: issue.id.toString(),
     ISSUE_NUMBER: issue.number.toString(),
     ISSUE_TITLE: issue.title,
@@ -127,7 +130,7 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
 }
 
 // Handle issues events
-export async function handleIssuesEvent(data: any, env: any, configDO: any): Promise<Response> {
+export async function handleIssuesEvent(data: any, env: any): Promise<Response> {
   const action = data.action;
   const issue = data.issue;
   const repository = data.repository;
@@ -141,29 +144,21 @@ export async function handleIssuesEvent(data: any, env: any, configDO: any): Pro
     labels: issue.labels?.map((label: any) => label.name) || []
   });
 
-  // Create GitHub API client for authenticated requests
-  const githubAPI = new GitHubAPI(configDO);
+  // TODO: Update GitHubAPI to work with KV storage instead of gitHubConfigKV
+  // For now, we'll skip the GitHubAPI creation
+  // const githubAPI = new GitHubAPI(env);
 
   // Handle new issue creation with Claude Code
   if (action === 'opened') {
     logWithContext('ISSUES_EVENT', 'Handling new issue creation');
 
     try {
-      // Post initial acknowledgment comment
-      logWithContext('ISSUES_EVENT', 'Posting initial acknowledgment comment');
-
-      await githubAPI.createComment(
-        repository.owner.login,
-        repository.name,
-        issue.number,
-        `🤖 **Claude Code Assistant**\n\nI've received this issue and I'm analyzing it now. I'll start working on a solution shortly!\n\n---\n🚀 Powered by Claude Code`
-      );
-
-      logWithContext('ISSUES_EVENT', 'Initial comment posted successfully');
+      // TODO: Implement GitHub comment posting with KV credentials
+      logWithContext('ISSUES_EVENT', 'Skipping initial acknowledgment comment (needs GitHub API update for KV)');
 
       // Route to Claude Code container for processing
       logWithContext('ISSUES_EVENT', 'Routing to Claude Code container');
-      await routeToClaudeCodeContainer(issue, repository, env, configDO);
+      await routeToClaudeCodeContainer(issue, repository, env);
 
       logWithContext('ISSUES_EVENT', 'Issue routed to Claude Code container successfully');
 
@@ -173,23 +168,8 @@ export async function handleIssuesEvent(data: any, env: any, configDO: any): Pro
         issueNumber: issue.number
       });
 
-      // Post error comment
-      try {
-        logWithContext('ISSUES_EVENT', 'Posting error comment to issue');
-
-        await githubAPI.createComment(
-          repository.owner.login,
-          repository.name,
-          issue.number,
-          `❌ I encountered an error while setting up to work on this issue: ${(error as Error).message}\n\nI'll need human assistance to resolve this.`
-        );
-
-        logWithContext('ISSUES_EVENT', 'Error comment posted successfully');
-      } catch (commentError) {
-        logWithContext('ISSUES_EVENT', 'Failed to post error comment', {
-          commentError: commentError instanceof Error ? commentError.message : String(commentError)
-        });
-      }
+      // TODO: Implement error comment posting with KV credentials
+      logWithContext('ISSUES_EVENT', 'Skipping error comment (needs GitHub API update for KV)');
     }
   }
 

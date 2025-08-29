@@ -1,7 +1,7 @@
-import { encrypt } from "../crypto";
 import { logWithContext } from "../log";
+import { createGitHubConfigKV } from "../kv_storage";
 
-export async function handleClaudeSetup(request: Request, origin: string, env: any): Promise<Response> {
+export async function handleClaudeSetup(request: Request, origin: string, env: { GITHUB_CONFIG: KVNamespace }): Promise<Response> {
   logWithContext('CLAUDE_SETUP', 'Handling Claude setup request', {
     method: request.method,
     origin
@@ -25,29 +25,13 @@ export async function handleClaudeSetup(request: Request, origin: string, env: a
         throw new Error('Invalid Anthropic API key format');
       }
 
-      // Store the API key securely in a deployment-specific Durable Object
-      const deploymentId = 'claude-config'; // Single config per deployment
-      logWithContext('CLAUDE_SETUP', 'Storing API key in Durable Object', { deploymentId });
+      // Store the API key securely in KV
+      logWithContext('CLAUDE_SETUP', 'Storing API key in KV');
 
-      const id = env.GITHUB_APP_CONFIG.idFromName(deploymentId);
-      const configDO = env.GITHUB_APP_CONFIG.get(id);
+      const gitHubConfigKV = createGitHubConfigKV(env);
+      await gitHubConfigKV.storeClaudeApiKey(apiKey);
 
-      // Encrypt the API key
-      const encryptedApiKey = await encrypt(apiKey);
-      logWithContext('CLAUDE_SETUP', 'API key encrypted successfully');
-
-      // Store in Durable Object
-      const storeResponse = await configDO.fetch(new Request('http://internal/store-claude-key', {
-        method: 'POST',
-        body: JSON.stringify({
-          anthropicApiKey: encryptedApiKey,
-          claudeSetupAt: new Date().toISOString()
-        })
-      }));
-
-      logWithContext('CLAUDE_SETUP', 'API key stored in Durable Object', {
-        storeResponseStatus: storeResponse.status
-      });
+      logWithContext('CLAUDE_SETUP', 'API key stored in KV successfully');
 
       return new Response(`
 <!DOCTYPE html>

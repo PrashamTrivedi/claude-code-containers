@@ -1,5 +1,5 @@
-import { encrypt } from "../crypto";
 import { logWithContext } from "../log";
+import { storeEncryptedGitHubCredentials } from "../kv_storage";
 
 export async function handleOAuthCallback(_request: Request, url: URL, env: any): Promise<Response> {
   logWithContext('OAUTH_CALLBACK', 'Handling OAuth callback', {
@@ -47,52 +47,35 @@ export async function handleOAuthCallback(_request: Request, url: URL, env: any)
       owner: appData.owner?.login
     });
 
-    // Store app credentials securely in Durable Object
-    logWithContext('OAUTH_CALLBACK', 'Storing app credentials in Durable Object');
+    // Store app credentials securely in KV
+    logWithContext('OAUTH_CALLBACK', 'Storing app credentials in KV');
 
     try {
-      const encryptedPrivateKey = await encrypt(appData.pem);
-      const encryptedWebhookSecret = await encrypt(appData.webhook_secret);
+      const success = await storeEncryptedGitHubCredentials(
+        env,
+        appData.id.toString(),
+        appData.pem,
+        appData.webhook_secret,
+        {
+          name: appData.name,
+          htmlUrl: appData.html_url,
+          owner: appData.owner ? {
+            login: appData.owner.login,
+            type: 'User', // Default to User, will be updated during installation
+            id: 0 // Will be updated during installation
+          } : undefined
+        }
+      );
 
-      logWithContext('OAUTH_CALLBACK', 'App credentials encrypted successfully');
-
-      const appConfig: GitHubAppConfig = {
-        appId: appData.id.toString(),
-        privateKey: encryptedPrivateKey,
-        webhookSecret: encryptedWebhookSecret,
-        repositories: [],
-        owner: {
-          login: appData.owner?.login || 'unknown',
-          type: 'User', // Default to User, will be updated during installation
-          id: 0 // Will be updated during installation
-        },
-        permissions: {
-          contents: 'read',
-          metadata: 'read',
-          pull_requests: 'write',
-          issues: 'write'
-        },
-        events: ['issues'],
-        createdAt: new Date().toISOString(),
-        webhookCount: 0
-      };
-
-      // Store in Durable Object (using app ID as unique identifier)
-      const id = env.GITHUB_APP_CONFIG.idFromName(appData.id.toString());
-      const configDO = env.GITHUB_APP_CONFIG.get(id);
-
-      // We need to create a simple API for the Durable Object
-      const storeResponse = await configDO.fetch(new Request('http://internal/store', {
-        method: 'POST',
-        body: JSON.stringify(appConfig)
-      }));
-
-      logWithContext('OAUTH_CALLBACK', 'App config stored in Durable Object', {
-        appId: appData.id,
-        storeResponseStatus: storeResponse.status
-      });
+      if (success) {
+        logWithContext('OAUTH_CALLBACK', 'App config stored in KV successfully', {
+          appId: appData.id
+        });
+      } else {
+        throw new Error('Failed to store credentials in KV');
+      }
     } catch (error) {
-      logWithContext('OAUTH_CALLBACK', 'Failed to store app config', {
+      logWithContext('OAUTH_CALLBACK', 'Failed to store app config in KV', {
         error: error instanceof Error ? error.message : String(error)
       });
       // Continue with the flow even if storage fails

@@ -1,7 +1,8 @@
 import { logWithContext } from "../../log";
+import { updateInstallationInKV } from "../../kv_storage";
 
-// Handle installation events (app installed/uninstalled)
-export async function handleInstallationEvent(data: any, configDO: any): Promise<Response> {
+// Handle installation events (app installed/uninstalled)  
+export async function handleInstallationEvent(data: any, env: any): Promise<Response> {
   const action = data.action;
   const installation = data.installation;
 
@@ -27,22 +28,18 @@ export async function handleInstallationEvent(data: any, configDO: any): Promise
       repositories: repoData.map((r: any) => r.full_name)
     });
 
-    const updateResponse = await configDO.fetch(new Request('http://internal/update-installation', {
-      method: 'POST',
-      body: JSON.stringify({
-        installationId: installation.id.toString(),
-        repositories: repoData,
-        owner: {
-          login: installation.account.login,
-          type: installation.account.type,
-          id: installation.account.id
-        }
-      })
-    }));
+    await updateInstallationInKV(
+      env,
+      installation.id.toString(),
+      {
+        login: installation.account.login,
+        type: installation.account.type,
+        id: installation.account.id
+      }
+    );
 
     logWithContext('INSTALLATION_EVENT', 'App installed successfully', {
-      repositoryCount: repositories.length,
-      updateResponseStatus: updateResponse.status
+      repositoryCount: repositories.length
     });
   } else if (action === 'deleted') {
     // App was uninstalled - could clean up or mark as inactive

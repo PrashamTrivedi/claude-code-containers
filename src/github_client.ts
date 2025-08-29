@@ -2,25 +2,24 @@ import { logWithContext } from "./log";
 
 // GitHub API client with authentication
 export class GitHubAPI {
-  private configDO: any;
+  private gitHubConfigKV: any;
 
-  constructor(configDO: any) {
-    this.configDO = configDO;
+  constructor(gitHubConfigKV: any) {
+    this.gitHubConfigKV = gitHubConfigKV;
   }
 
   async makeAuthenticatedRequest(path: string, options: RequestInit = {}): Promise<Response> {
     logWithContext('GITHUB_API', 'Making authenticated request', { path, method: options.method || 'GET' });
 
-    const tokenResponse = await this.configDO.fetch(new Request('http://internal/get-installation-token'));
-    const tokenData = await tokenResponse.json() as { token: string };
+    const installationToken = await this.gitHubConfigKV.getInstallationToken();
 
-    if (!tokenData.token) {
+    if (!installationToken) {
       logWithContext('GITHUB_API', 'No installation token available');
       throw new Error('No valid installation token available');
     }
 
     const headers = {
-      'Authorization': `Bearer ${tokenData.token}`,
+      'Authorization': `Bearer ${installationToken}`,
       'Accept': 'application/vnd.github.v3+json',
       'User-Agent': 'Worker-GitHub-Integration',
       ...options.headers
