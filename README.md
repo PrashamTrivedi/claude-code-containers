@@ -1,8 +1,12 @@
 # 🤖 Claude Code on Cloudflare
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ghostwriternr/claude-code-containers)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/PrashamTrivedi/claude-code-containers)
 
 This template provides a containerized environment on Cloudflare workers for Claude Code to process GitHub issues. It listens to new issues created from your connected repositories, and creates a Pull Request to solve them.
+
+## 🙏 Attribution
+
+This project is inspired by and built upon the original [Claude Code Containers demo](https://github.com/ghostwriternr/claude-code-containers) created by the Cloudflare team. We've extended and customized it for enhanced functionality and improved GitHub integration.
 
 ## ✨ Features
 
