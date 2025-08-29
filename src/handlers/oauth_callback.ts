@@ -55,16 +55,7 @@ export async function handleOAuthCallback(_request: Request, url: URL, env: any)
         env,
         appData.id.toString(),
         appData.pem,
-        appData.webhook_secret,
-        {
-          name: appData.name,
-          htmlUrl: appData.html_url,
-          owner: appData.owner ? {
-            login: appData.owner.login,
-            type: 'User', // Default to User, will be updated during installation
-            id: 0 // Will be updated during installation
-          } : undefined
-        }
+        appData.webhook_secret
       );
 
       if (success) {

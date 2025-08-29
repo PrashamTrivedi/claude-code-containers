@@ -18,12 +18,11 @@ export async function handleGitHubStatus(_request: Request, env: any): Promise<R
     }
 
     const credentials = await getDecryptedGitHubCredentials(env);
-    const rawConfig = await getGitHubConfigFromKV(env);
     
-    if (!credentials || !rawConfig) {
+    if (!credentials) {
       logWithContext('GITHUB_STATUS', 'Could not retrieve GitHub configuration');
       return new Response(JSON.stringify({ 
-        configured: true,
+        configured: false,
         error: 'Could not retrieve configuration details' 
       }), {
         headers: { 'Content-Type': 'application/json' },
@@ -34,17 +33,17 @@ export async function handleGitHubStatus(_request: Request, env: any): Promise<R
     const status = {
       configured: true,
       appId: credentials.appId,
-      name: credentials.name || 'Claude Code on Cloudflare',
-      owner: credentials.owner,
-      installationId: credentials.installationId,
-      htmlUrl: credentials.htmlUrl,
       storage: 'KV',
-      lastUpdated: new Date().toISOString()
+      hasPrivateKey: !!credentials.privateKey,
+      hasWebhookSecret: !!credentials.webhookSecret,
+      credentialFormat: 'KV Storage (app_id, private_key, webhook_secret)',
+      lastChecked: new Date().toISOString(),
+      ready: true
     };
 
     logWithContext('GITHUB_STATUS', 'GitHub app status retrieved successfully', {
       appId: credentials.appId,
-      hasInstallationId: !!credentials.installationId
+      storage: 'KV'
     });
 
     return new Response(JSON.stringify(status, null, 2), {

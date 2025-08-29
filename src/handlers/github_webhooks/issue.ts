@@ -24,12 +24,20 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any)
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
 
-  // Get GitHub credentials from KV
-  logWithContext('CLAUDE_ROUTING', 'Retrieving GitHub credentials from KV');
-
-  // For now, we'll skip the installation token generation as it requires more complex logic
-  // that would need the GitHub API integration to be properly updated for KV storage
-  const installationToken = null;
+  // Get installation token using KV credentials
+  logWithContext('CLAUDE_ROUTING', 'Generating installation token from KV credentials');
+  
+  // Import generateInstallationToken from kv_storage
+  const { generateInstallationToken } = await import('../../kv_storage');
+  
+  // We need an installation ID to generate the token
+  // This should come from the webhook payload or be stored separately
+  const installationId = repository.installation?.id?.toString();
+  
+  let installationToken = null;
+  if (installationId) {
+    installationToken = await generateInstallationToken(env, installationId);
+  }
 
   logWithContext('CLAUDE_ROUTING', 'Installation token retrieved', {
     hasToken: !!installationToken

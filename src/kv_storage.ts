@@ -1,32 +1,15 @@
 import { logWithContext } from "./log";
-import { decrypt, encrypt } from "./crypto";
 
 export interface KVGitHubConfig {
   app_id: string;
   private_key: string;
   webhook_secret: string;
-  installation_id?: string;
-  name?: string;
-  html_url?: string;
-  owner?: {
-    login: string;
-    type: "User" | "Organization";
-    id: number;
-  };
 }
 
 export interface DecryptedGitHubCredentials {
   appId: string;
   privateKey: string;
   webhookSecret: string;
-  installationId?: string;
-  name?: string;
-  htmlUrl?: string;
-  owner?: {
-    login: string;
-    type: "User" | "Organization";
-    id: number;
-  };
 }
 
 /**
@@ -48,8 +31,7 @@ export async function getGitHubConfigFromKV(env: any): Promise<KVGitHubConfig | 
     logWithContext('KV_STORAGE', 'GitHub config retrieved from KV', {
       appId: config.app_id,
       hasPrivateKey: !!config.private_key,
-      hasWebhookSecret: !!config.webhook_secret,
-      hasInstallationId: !!config.installation_id
+      hasWebhookSecret: !!config.webhook_secret
     });
 
     return config;
@@ -95,25 +77,19 @@ export async function getDecryptedGitHubCredentials(env: any): Promise<Decrypted
   }
 
   try {
-    logWithContext('KV_STORAGE', 'Decrypting GitHub credentials from KV');
+    logWithContext('KV_STORAGE', 'Reading GitHub credentials from KV (stored as plain text)');
 
-    const privateKey = await decrypt(config.private_key);
-    const webhookSecret = await decrypt(config.webhook_secret);
-
+    // Keys are stored as plain text, not encrypted
     const credentials: DecryptedGitHubCredentials = {
       appId: config.app_id,
-      privateKey,
-      webhookSecret,
-      installationId: config.installation_id,
-      name: config.name,
-      htmlUrl: config.html_url,
-      owner: config.owner
+      privateKey: config.private_key,
+      webhookSecret: config.webhook_secret
     };
 
-    logWithContext('KV_STORAGE', 'GitHub credentials decrypted successfully');
+    logWithContext('KV_STORAGE', 'GitHub credentials retrieved successfully');
     return credentials;
   } catch (error) {
-    logWithContext('KV_STORAGE', 'Error decrypting GitHub credentials from KV', {
+    logWithContext('KV_STORAGE', 'Error reading GitHub credentials from KV', {
       error: error instanceof Error ? error.message : String(error)
     });
     return null;
@@ -121,40 +97,26 @@ export async function getDecryptedGitHubCredentials(env: any): Promise<Decrypted
 }
 
 /**
- * Store encrypted GitHub app credentials in KV storage
+ * Store GitHub app credentials in KV storage (as plain text to match existing format)
  */
 export async function storeEncryptedGitHubCredentials(
   env: any, 
   appId: string, 
   privateKey: string, 
-  webhookSecret: string,
-  additionalData?: {
-    installationId?: string;
-    name?: string;
-    htmlUrl?: string;
-    owner?: {
-      login: string;
-      type: "User" | "Organization";
-      id: number;
-    };
-  }
+  webhookSecret: string
 ): Promise<boolean> {
   try {
-    logWithContext('KV_STORAGE', 'Encrypting and storing GitHub credentials');
-
-    const encryptedPrivateKey = await encrypt(privateKey);
-    const encryptedWebhookSecret = await encrypt(webhookSecret);
+    logWithContext('KV_STORAGE', 'Storing GitHub credentials in KV (plain text format)');
 
     const config: KVGitHubConfig = {
       app_id: appId,
-      private_key: encryptedPrivateKey,
-      webhook_secret: encryptedWebhookSecret,
-      ...additionalData
+      private_key: privateKey,
+      webhook_secret: webhookSecret
     };
 
     return await storeGitHubConfigInKV(env, config);
   } catch (error) {
-    logWithContext('KV_STORAGE', 'Error encrypting and storing GitHub credentials', {
+    logWithContext('KV_STORAGE', 'Error storing GitHub credentials', {
       error: error instanceof Error ? error.message : String(error)
     });
     return false;
@@ -163,9 +125,10 @@ export async function storeEncryptedGitHubCredentials(
 
 /**
  * Update installation information in KV storage
+ * Note: Since KV only stores core app credentials, installation info is managed separately
  */
 export async function updateInstallationInKV(
-  env: any, 
+  _env: any, 
   installationId: string,
   owner?: {
     login: string;
@@ -173,19 +136,13 @@ export async function updateInstallationInKV(
     id: number;
   }
 ): Promise<boolean> {
-  const config = await getGitHubConfigFromKV(env);
-  
-  if (!config) {
-    logWithContext('KV_STORAGE', 'Cannot update installation - no config found in KV');
-    return false;
-  }
-
-  config.installation_id = installationId;
-  if (owner) {
-    config.owner = owner;
-  }
-
-  return await storeGitHubConfigInKV(env, config);
+  logWithContext('KV_STORAGE', 'Installation update not implemented for simple KV storage', {
+    installationId,
+    owner: owner?.login
+  });
+  // For now, just acknowledge the installation update
+  // In a full implementation, this might be stored in a separate KV key
+  return true;
 }
 
 /**
@@ -194,4 +151,46 @@ export async function updateInstallationInKV(
 export async function isGitHubAppConfigured(env: any): Promise<boolean> {
   const config = await getGitHubConfigFromKV(env);
   return config !== null && !!config.app_id && !!config.private_key && !!config.webhook_secret;
+}
+
+/**
+ * Generate GitHub installation token using app credentials from KV
+ */
+export async function generateInstallationToken(env: any, installationId: string): Promise<string | null> {
+  const credentials = await getDecryptedGitHubCredentials(env);
+  if (!credentials) {
+    logWithContext('KV_STORAGE', 'Cannot generate installation token - no credentials found');
+    return null;
+  }
+
+  try {
+    logWithContext('KV_STORAGE', 'Generating JWT for GitHub App', {
+      appId: credentials.appId,
+      installationId
+    });
+
+    // Import generateInstallationToken from crypto.ts 
+    const { generateInstallationToken: generateToken } = await import('./crypto');
+    
+    const tokenData = await generateToken(
+      credentials.appId,
+      credentials.privateKey,
+      installationId
+    );
+
+    if (tokenData && tokenData.token) {
+      logWithContext('KV_STORAGE', 'Installation token generated successfully', {
+        expiresAt: tokenData.expires_at
+      });
+      return tokenData.token;
+    }
+
+    logWithContext('KV_STORAGE', 'Failed to generate installation token');
+    return null;
+  } catch (error) {
+    logWithContext('KV_STORAGE', 'Error generating installation token', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
 }

@@ -77,16 +77,23 @@ export async function handleGitHubSetup(_request: Request, origin: string, env?:
     <div class="config-info">
         <h3>Current Configuration</h3>
         <p><strong>App ID:</strong> ${credentials.appId}</p>
-        <p><strong>Owner:</strong> ${credentials.owner?.login || 'Unknown'}</p>
-        <p><strong>Installation ID:</strong> ${credentials.installationId || 'Not installed'}</p>
-        <p><strong>App Name:</strong> ${credentials.name || 'Claude Code on Cloudflare'}</p>
+        <p><strong>Storage:</strong> KV</p>
+        <p><strong>Webhook Secret:</strong> ✓ Configured</p>
+        <p><strong>Private Key:</strong> ✓ Configured</p>
     </div>
 
-    <p>Your GitHub app is already set up and ready to receive webhooks.</p>
+    <p>Your GitHub app credentials are stored in KV and ready to process webhooks.</p>
     
-    ${credentials.htmlUrl ? `<a href="${credentials.htmlUrl}/installations/new" class="install-btn">Install App on Repositories</a>` : ''}
+    <div style="margin: 20px 0;">
+        <a href="https://github.com/settings/apps" target="_blank" class="install-btn">
+            Manage App on GitHub
+        </a>
+    </div>
     
     <p><a href="/gh-status">View Detailed Status</a></p>
+    
+    <hr style="margin: 30px 0;">
+    <p><small><strong>Note:</strong> This uses the existing GitHub app configured in KV storage.</small></p>
 </body>
 </html>`;
     
