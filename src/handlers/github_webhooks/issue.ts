@@ -2,6 +2,7 @@ import {GitHubAPI} from "../../github_client"
 import {logWithContext} from "../../log"
 import {containerFetch, getRouteFromRequest} from "../../fetch"
 import {generateInstallationToken} from '../../kv_storage'
+import {getOrDiscoverInstallationId} from '../../github_installation_discovery'
 
 // Simplified container response interface
 interface ContainerResponse {
@@ -11,7 +12,7 @@ interface ContainerResponse {
 }
 
 // Route GitHub issue to Claude Code container
-async function routeToClaudeCodeContainer(issue: any, repository: any, env: any): Promise<void> {
+async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, webhookData?: any): Promise<void> {
   const containerName = `claude-issue-${issue.id}`
 
   logWithContext('CLAUDE_ROUTING', 'Routing issue to Claude Code container', {
@@ -26,18 +27,39 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any)
   const id = env.MY_CONTAINER.idFromName(containerName)
   const container = env.MY_CONTAINER.get(id)
 
-  // Get installation token using KV credentials
-  logWithContext('CLAUDE_ROUTING', 'Generating installation token from KV credentials', repository)
+  // Extract repository owner/name
+  const [owner, repo] = repository.full_name.split('/')
+  
+  // Get installation ID with discovery fallback
+  logWithContext('CLAUDE_ROUTING', 'Discovering installation ID for repository', {
+    owner,
+    repo,
+    webhookInstallationId: webhookData?.installation?.id?.toString()
+  })
 
+  const installationId = await getOrDiscoverInstallationId(
+    env,
+    owner,
+    repo,
+    webhookData?.installation?.id?.toString()
+  )
 
-  // We need an installation ID to generate the token
-  // This should come from the webhook payload or be stored separately
-  const installationId = repository.installation?.id?.toString()
-
-  let installationToken = null
-  if (installationId) {
-    installationToken = await generateInstallationToken(env, installationId)
+  if (!installationId) {
+    logWithContext('CLAUDE_ROUTING', 'No installation ID found for repository', {
+      owner,
+      repo,
+      repository: repository.full_name
+    })
+    throw new Error(`No GitHub App installation found for repository ${repository.full_name}`)
   }
+
+  // Generate installation token
+  logWithContext('CLAUDE_ROUTING', 'Generating installation token', {
+    installationId,
+    repository: repository.full_name
+  })
+
+  const installationToken = await generateInstallationToken(env, installationId)
 
   logWithContext('CLAUDE_ROUTING', 'Installation token retrieved', {
     hasToken: !!installationToken,
@@ -150,7 +172,8 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
     issueTitle: issue.title,
     repository: repository.full_name,
     author: issue.user?.login,
-    labels: issue.labels?.map((label: any) => label.name) || []
+    labels: issue.labels?.map((label: any) => label.name) || [],
+    installationId: data.installation?.id
   })
 
   // TODO: Update GitHubAPI to work with KV storage instead of gitHubConfigKV
@@ -167,7 +190,7 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
 
       // Route to Claude Code container for processing
       logWithContext('ISSUES_EVENT', 'Routing to Claude Code container')
-      await routeToClaudeCodeContainer(issue, repository, env)
+      await routeToClaudeCodeContainer(issue, repository, env, data)
 
       logWithContext('ISSUES_EVENT', 'Issue routed to Claude Code container successfully')
 
@@ -209,7 +232,7 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
 
       try {
         // Route updated issue to Claude Code container for re-analysis
-        await routeToClaudeCodeContainer(issue, repository, env)
+        await routeToClaudeCodeContainer(issue, repository, env, data)
 
         logWithContext('ISSUES_EVENT', 'Updated issue routed to Claude Code container successfully')
 

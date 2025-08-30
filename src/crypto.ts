@@ -74,7 +74,7 @@ export async function decrypt(encryptedText: string, key?: CryptoKey): Promise<s
 }
 
 // JWT token generation for GitHub App authentication
-async function generateAppJWT(appId: string, privateKey: string): Promise<string> {
+export async function generateAppJWT(appId: string, privateKey: string): Promise<string> {
   logWithContext('JWT', 'Generating App JWT token', { appId });
 
   const now = Math.floor(Date.now() / 1000);

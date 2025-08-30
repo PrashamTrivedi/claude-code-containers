@@ -1,4 +1,5 @@
 import { logWithContext } from "./log";
+import { generateInstallationToken as generateInstallationTokenFromJWT } from './crypto';
 
 export interface KVGitHubConfig {
   app_id: string;
@@ -154,6 +155,69 @@ export async function isGitHubAppConfigured(env: any): Promise<boolean> {
 }
 
 /**
+ * Get cached installation ID for a repository
+ */
+export async function getInstallationIdForRepository(env: any, owner: string, repo: string): Promise<string | null> {
+  try {
+    const key = `installation:${owner}/${repo}`;
+    logWithContext('KV_STORAGE', 'Retrieving cached installation ID', { owner, repo, key });
+    
+    const cachedId = await env.GITHUB_CONFIG.get(key);
+    
+    if (cachedId) {
+      logWithContext('KV_STORAGE', 'Installation ID found in cache', { owner, repo, installationId: cachedId });
+      return cachedId;
+    }
+    
+    logWithContext('KV_STORAGE', 'No cached installation ID found', { owner, repo });
+    return null;
+  } catch (error) {
+    logWithContext('KV_STORAGE', 'Error retrieving cached installation ID', {
+      owner,
+      repo,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Cache installation ID for a repository with 7-day TTL
+ */
+export async function storeInstallationIdForRepository(
+  env: any, 
+  owner: string, 
+  repo: string, 
+  installationId: string
+): Promise<boolean> {
+  try {
+    const key = `installation:${owner}/${repo}`;
+    const ttlSeconds = 7 * 24 * 60 * 60; // 7 days
+    
+    logWithContext('KV_STORAGE', 'Storing installation ID in cache', {
+      owner,
+      repo,
+      installationId,
+      key,
+      ttlDays: 7
+    });
+    
+    await env.GITHUB_CONFIG.put(key, installationId, { expirationTtl: ttlSeconds });
+    
+    logWithContext('KV_STORAGE', 'Installation ID cached successfully', { owner, repo, installationId });
+    return true;
+  } catch (error) {
+    logWithContext('KV_STORAGE', 'Error storing installation ID in cache', {
+      owner,
+      repo,
+      installationId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return false;
+  }
+}
+
+/**
  * Generate GitHub installation token using app credentials from KV
  */
 export async function generateInstallationToken(env: any, installationId: string): Promise<string | null> {
@@ -169,10 +233,7 @@ export async function generateInstallationToken(env: any, installationId: string
       installationId
     });
 
-    // Import generateInstallationToken from crypto.ts 
-    const { generateInstallationToken: generateToken } = await import('./crypto');
-    
-    const tokenData = await generateToken(
+    const tokenData = await generateInstallationTokenFromJWT(
       credentials.appId,
       credentials.privateKey,
       installationId
