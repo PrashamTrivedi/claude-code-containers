@@ -1,4 +1,4 @@
-import { getDecryptedGitHubCredentials, isGitHubAppConfigured, getGitHubConfigFromKV } from "../kv_storage";
+import { getDecryptedGitHubCredentials, isGitHubAppConfigured, getGitHubConfigFromKV, isClaudeApiKeyConfigured } from "../kv_storage";
 import { logWithContext } from "../log";
 
 export async function handleGitHubStatus(_request: Request, env: any): Promise<Response> {
@@ -30,6 +30,9 @@ export async function handleGitHubStatus(_request: Request, env: any): Promise<R
       });
     }
 
+    // Check Claude API key configuration
+    const claudeConfigured = await isClaudeApiKeyConfigured(env);
+
     const status = {
       configured: true,
       appId: credentials.appId,
@@ -37,8 +40,12 @@ export async function handleGitHubStatus(_request: Request, env: any): Promise<R
       hasPrivateKey: !!credentials.privateKey,
       hasWebhookSecret: !!credentials.webhookSecret,
       credentialFormat: 'KV Storage (app_id, private_key, webhook_secret)',
+      claudeApiKey: {
+        configured: claudeConfigured,
+        status: claudeConfigured ? 'ready' : 'not configured'
+      },
       lastChecked: new Date().toISOString(),
-      ready: true
+      ready: true && claudeConfigured
     };
 
     logWithContext('GITHUB_STATUS', 'GitHub app status retrieved successfully', {

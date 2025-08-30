@@ -1,7 +1,7 @@
 import {GitHubAPI} from "../../github_client"
 import {logWithContext} from "../../log"
 import {containerFetch, getRouteFromRequest} from "../../fetch"
-import {generateInstallationToken} from '../../kv_storage'
+import {generateInstallationToken, getClaudeApiKey} from '../../kv_storage'
 import {getOrDiscoverInstallationId} from '../../github_installation_discovery'
 
 // Simplified container response interface
@@ -72,9 +72,9 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
   }
 
   // Get Claude API key from secure storage
-  logWithContext('CLAUDE_ROUTING', 'Skipping Claude API key retrieval (KV integration pending)')
+  logWithContext('CLAUDE_ROUTING', 'Retrieving Claude API key from KV storage')
 
-  const claudeApiKey = null // TODO: Implement Claude API key retrieval from KV
+  const claudeApiKey = await getClaudeApiKey(env)
 
   logWithContext('CLAUDE_ROUTING', 'Claude API key check', {
     hasApiKey: !!claudeApiKey

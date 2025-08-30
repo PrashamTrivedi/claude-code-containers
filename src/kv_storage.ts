@@ -218,6 +218,61 @@ export async function storeInstallationIdForRepository(
 }
 
 /**
+ * Store Claude API key in KV storage
+ */
+export async function storeClaudeApiKey(env: any, apiKey: string): Promise<boolean> {
+  try {
+    logWithContext('KV_STORAGE', 'Storing Claude API key in KV');
+
+    await env.GITHUB_CONFIG.put('claude_api_key', apiKey);
+    
+    logWithContext('KV_STORAGE', 'Claude API key stored successfully in KV');
+    return true;
+  } catch (error) {
+    logWithContext('KV_STORAGE', 'Error storing Claude API key in KV', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return false;
+  }
+}
+
+/**
+ * Get Claude API key from KV storage
+ */
+export async function getClaudeApiKey(env: any): Promise<string | null> {
+  try {
+    logWithContext('KV_STORAGE', 'Retrieving Claude API key from KV');
+    
+    const apiKey = await env.GITHUB_CONFIG.get('claude_api_key');
+    
+    if (!apiKey) {
+      logWithContext('KV_STORAGE', 'No Claude API key found in KV');
+      return null;
+    }
+
+    logWithContext('KV_STORAGE', 'Claude API key retrieved from KV', {
+      hasApiKey: !!apiKey,
+      keyPrefix: apiKey ? apiKey.substring(0, 7) + '...' : 'none'
+    });
+
+    return apiKey;
+  } catch (error) {
+    logWithContext('KV_STORAGE', 'Error retrieving Claude API key from KV', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Check if Claude API key is configured in KV storage
+ */
+export async function isClaudeApiKeyConfigured(env: any): Promise<boolean> {
+  const apiKey = await getClaudeApiKey(env);
+  return apiKey !== null && apiKey.startsWith('sk-ant-');
+}
+
+/**
  * Generate GitHub installation token using app credentials from KV
  */
 export async function generateInstallationToken(env: any, installationId: string): Promise<string | null> {

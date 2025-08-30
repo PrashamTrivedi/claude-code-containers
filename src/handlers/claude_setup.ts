@@ -1,4 +1,5 @@
 import { logWithContext } from "../log";
+import { storeClaudeApiKey } from "../kv_storage";
 
 export async function handleClaudeSetup(request: Request, origin: string, env?: any): Promise<Response> {
   logWithContext('CLAUDE_SETUP', 'Handling Claude setup request', {
@@ -24,11 +25,15 @@ export async function handleClaudeSetup(request: Request, origin: string, env?: 
         throw new Error('Invalid Anthropic API key format');
       }
 
-      // TODO: Implement Claude API key storage in KV
-      logWithContext('CLAUDE_SETUP', 'API key storage not implemented for KV yet');
+      // Store Claude API key in KV
+      const stored = await storeClaudeApiKey(env, apiKey);
       
-      // For now, just acknowledge the key was received
-      logWithContext('CLAUDE_SETUP', 'Claude API key setup acknowledged (storage pending)');
+      if (!stored) {
+        logWithContext('CLAUDE_SETUP', 'Failed to store Claude API key');
+        throw new Error('Failed to store Claude API key');
+      }
+      
+      logWithContext('CLAUDE_SETUP', 'Claude API key stored successfully');
 
       return new Response(`
 <!DOCTYPE html>
