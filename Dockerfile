@@ -4,7 +4,7 @@ FROM node:22 AS base
 
 
 
-EXPOSE 4005
+EXPOSE 8080
 
 # Update package lists and install dependencies first
 RUN apt-get update && \
@@ -19,6 +19,9 @@ RUN apt-get update && \
 
 # Install Claude Code CLI binary using native installation
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Add Claude to PATH
+ENV PATH="/root/.local/bin:$PATH"
 
 
 # Set destination for COPY

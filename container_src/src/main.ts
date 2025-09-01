@@ -6,7 +6,7 @@ import * as path from 'path'
 import {spawn} from 'child_process'
 import {ContainerGitHubClient} from './github_client.js'
 
-const PORT = 4005
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8080
 
 // Simplified container response interface
 interface ContainerResponse {
