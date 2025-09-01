@@ -1,5 +1,7 @@
 import { logWithContext } from "../log";
 import { getClaudeApiKey } from "../kv_storage";
+import { containerFetch } from "../fetch";
+import { loadBalance } from '@cloudflare/containers';
 
 export async function handleClaudeTest(request: Request, env?: any): Promise<Response> {
   logWithContext('CLAUDE_TEST', 'Handling Claude test request', {
@@ -63,106 +65,60 @@ export async function handleClaudeTest(request: Request, env?: any): Promise<Res
       });
     }
 
-    logWithContext('CLAUDE_TEST', 'Making API call to Claude', {
+    logWithContext('CLAUDE_TEST', 'Routing Claude test to container', {
       keyPrefix: apiKey.substring(0, 7) + '...'
     });
 
-    // Make API call to Claude
-    const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-3-haiku-20240307',
-        max_tokens: 1024,
-        system: 'You are a star wars nerd, and the person who greets you, have been following star wars since they were kid',
-        messages: [{
-          role: 'user',
-          content: 'hello there!'
-        }]
-      })
-    });
+    // Prepare test data for container - simulating a simple test issue
+    const testData = {
+      ANTHROPIC_API_KEY: apiKey,
+      ISSUE_ID: 'claude-test-123',
+      ISSUE_NUMBER: '0',
+      ISSUE_TITLE: 'Claude Code Test',
+      ISSUE_BODY: 'hello there!',
+      ISSUE_LABELS: '[]',
+      REPOSITORY_URL: 'https://github.com/test/test.git',
+      REPOSITORY_NAME: 'test/test',
+      ISSUE_AUTHOR: 'testuser',
+      CLAUDE_TEST_MODE: 'true', // Flag to indicate this is a test
+      CLAUDE_TEST_PROMPT: 'You are a star wars nerd, and the person who greets you, have been following star wars since they were kid. Respond to: hello there!'
+    };
 
-    if (!claudeResponse.ok) {
-      const errorText = await claudeResponse.text();
-      logWithContext('CLAUDE_TEST', 'Claude API call failed', {
-        status: claudeResponse.status,
-        statusText: claudeResponse.statusText,
-        error: errorText
+    try {
+      // Use load balanced container for the test
+      logWithContext('CLAUDE_TEST', 'Creating container for Claude test');
+      const container = await loadBalance(env.MY_CONTAINER, 3);
+
+      // Make request to container
+      const containerRequest = new Request('http://internal/test-claude', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(testData)
       });
 
-      return new Response(`
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Claude Test - API Error</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 600px;
-            margin: 40px auto;
-            padding: 20px;
-            text-align: center;
-            line-height: 1.6;
-        }
-        .error { 
-            color: #dc3545; 
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            border-radius: 6px;
-            padding: 20px;
-            margin: 20px 0;
-            text-align: left;
-        }
-        .btn {
-            display: inline-block;
-            background: #0969da;
-            color: white;
-            padding: 12px 24px;
-            text-decoration: none;
-            border-radius: 6px;
-            font-weight: 600;
-            margin: 10px;
-        }
-        pre {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 4px;
-            overflow-x: auto;
-            text-align: left;
-        }
-    </style>
-</head>
-<body>
-    <h1>❌ Claude API Error</h1>
-    <div class="error">
-        <strong>API Call Failed:</strong><br>
-        Status: ${claudeResponse.status} ${claudeResponse.statusText}<br><br>
-        <strong>Response:</strong>
-        <pre>${errorText}</pre>
-    </div>
-    <a href="/claude-setup" class="btn">Check API Key Configuration</a>
-    <a href="/" class="btn">Back to Home</a>
-</body>
-</html>`, {
-        headers: { 'Content-Type': 'text/html' },
-        status: 500
+      logWithContext('CLAUDE_TEST', 'Sending request to container');
+      const containerResponse = await containerFetch(container, containerRequest, {
+        containerName: 'claude-test',
+        route: '/test-claude'
       });
-    }
 
-    const claudeData = await claudeResponse.json();
-    
-    logWithContext('CLAUDE_TEST', 'Claude API call successful', {
-      responseLength: claudeData.content?.[0]?.text?.length || 0
-    });
+      const responseText = await containerResponse.text();
+      logWithContext('CLAUDE_TEST', 'Container response received', {
+        status: containerResponse.status,
+        statusText: containerResponse.statusText,
+        responseLength: responseText.length
+      });
 
-    const claudeMessage = claudeData.content?.[0]?.text || 'No response from Claude';
+      if (containerResponse.ok) {
+        let containerResult;
+        try {
+          containerResult = JSON.parse(responseText);
+        } catch {
+          containerResult = { message: responseText };
+        }
 
-    return new Response(`
+        // Format successful response
+        return new Response(`
 <!DOCTYPE html>
 <html>
 <head>
@@ -215,23 +171,30 @@ export async function handleClaudeTest(request: Request, env?: any): Promise<Res
             padding: 15px;
             margin: 20px 0;
         }
+        .container-info {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+        }
     </style>
 </head>
 <body>
     <div class="success">
-        <h1>✅ Claude Test Successful!</h1>
-        <p>Claude API is working correctly and responded to your greeting!</p>
+        <h1>✅ Claude Container Test Successful!</h1>
+        <p>Claude Code container processed the request successfully!</p>
     </div>
 
-    <div class="prompt-info">
-        <strong>Test Details:</strong><br>
-        <strong>Your message:</strong> "hello there!"<br>
-        <strong>System prompt:</strong> "You are a star wars nerd, and the person who greets you, have been following star wars since they were kid"
+    <div class="container-info">
+        <strong>Container Test Details:</strong><br>
+        <strong>Method:</strong> Using Claude Code Container (not direct API)<br>
+        <strong>Test Message:</strong> "hello there!"<br>
+        <strong>System Prompt:</strong> "You are a star wars nerd..."
     </div>
 
     <div class="response">
-        <h3>Claude's Response:</h3>
-        <p>${claudeMessage.replace(/\n/g, '<br>')}</p>
+        <h3>Container Response:</h3>
+        <p>${containerResult.message || JSON.stringify(containerResult)}</p>
     </div>
 
     <div class="footer">
@@ -241,8 +204,124 @@ export async function handleClaudeTest(request: Request, env?: any): Promise<Res
     </div>
 </body>
 </html>`, {
-      headers: { 'Content-Type': 'text/html' }
-    });
+          headers: { 'Content-Type': 'text/html' }
+        });
+      } else {
+        // Container failed
+        return new Response(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Claude Test - Container Error</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 40px auto;
+            padding: 20px;
+            text-align: center;
+            line-height: 1.6;
+        }
+        .error { 
+            color: #dc3545; 
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            border-radius: 6px;
+            padding: 20px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .btn {
+            display: inline-block;
+            background: #0969da;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 10px;
+        }
+        pre {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <h1>❌ Container Test Failed</h1>
+    <div class="error">
+        <strong>Container Error:</strong><br>
+        Status: ${containerResponse.status} ${containerResponse.statusText}<br><br>
+        <strong>Response:</strong>
+        <pre>${responseText}</pre>
+    </div>
+    <a href="/claude-setup" class="btn">Check API Key Configuration</a>
+    <a href="/" class="btn">Back to Home</a>
+</body>
+</html>`, {
+          headers: { 'Content-Type': 'text/html' },
+          status: 500
+        });
+      }
+
+    } catch (containerError) {
+      logWithContext('CLAUDE_TEST', 'Error communicating with container', {
+        error: (containerError as Error).message,
+        stack: (containerError as Error).stack
+      });
+
+      return new Response(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Claude Test - Container Communication Error</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 40px auto;
+            padding: 20px;
+            text-align: center;
+            line-height: 1.6;
+        }
+        .error { 
+            color: #dc3545; 
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            border-radius: 6px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .btn {
+            display: inline-block;
+            background: #0969da;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>❌ Container Communication Error</h1>
+    <div class="error">
+        <strong>Failed to communicate with container:</strong> ${(containerError as Error).message}
+    </div>
+    <a href="/test-claude" class="btn">Try Again</a>
+    <a href="/" class="btn">Back to Home</a>
+</body>
+</html>`, {
+        headers: { 'Content-Type': 'text/html' },
+        status: 500
+      });
+    }
 
   } catch (error) {
     logWithContext('CLAUDE_TEST', 'Unexpected error during Claude test', {

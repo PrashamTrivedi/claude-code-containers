@@ -1,6 +1,13 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-slim AS base
+FROM node:22 AS base
+
+
+
+EXPOSE 4005
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
 
 # Update package lists and install dependencies
 RUN apt-get update && \
@@ -10,11 +17,8 @@ RUN apt-get update && \
         git \
         build-essential \
         python3-dev \
-        ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+        ca-certificates
 
-# Install Claude Code CLI globally
-RUN npm install -g @anthropic-ai/claude-code
 
 # Set destination for COPY
 WORKDIR /app
@@ -33,8 +37,6 @@ COPY container_src/src/ ./src/
 
 # Build TypeScript
 RUN npm run build
-
-EXPOSE 8080
 
 # Run the compiled JavaScript
 CMD ["node", "dist/main.js"]
