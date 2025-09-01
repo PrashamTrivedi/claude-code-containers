@@ -6,10 +6,7 @@ FROM node:22 AS base
 
 EXPOSE 4005
 
-# Install Claude Code CLI globally
-RUN npm install -g @anthropic-ai/claude-code
-
-# Update package lists and install dependencies
+# Update package lists and install dependencies first
 RUN apt-get update && \
     apt-get install -y \
         python3 \
@@ -17,7 +14,11 @@ RUN apt-get update && \
         git \
         build-essential \
         python3-dev \
-        ca-certificates
+        ca-certificates \
+        curl
+
+# Install Claude Code CLI binary using native installation
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 
 # Set destination for COPY

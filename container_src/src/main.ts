@@ -1,6 +1,6 @@
 import * as http from 'http'
 import {promises as fs} from 'fs'
-import {query, type SDKMessage} from '@anthropic-ai/claude-code'
+// Removed Claude Code SDK import - now using CLI
 import simpleGit from 'simple-git'
 import * as path from 'path'
 import {spawn} from 'child_process'
@@ -20,6 +20,13 @@ const MESSAGE = process.env.MESSAGE || 'Hello from Claude Code Container'
 const INSTANCE_ID = process.env.CLOUDFLARE_DEPLOYMENT_ID || 'unknown'
 
 // Types
+interface ClaudeCliResponse {
+  success: boolean
+  output?: string
+  error?: string
+  turns?: number
+}
+
 interface IssueContext {
   issueId: string
   issueNumber: string
@@ -41,6 +48,114 @@ interface HealthStatus {
 }
 
 
+
+// Execute Claude Code CLI command
+async function executeClaudeCodeCli(prompt: string): Promise<ClaudeCliResponse> {
+  return new Promise((resolve) => {
+    logWithContext('CLAUDE_CLI', 'Executing Claude Code CLI', {
+      promptLength: prompt.length,
+      hasApiKey: !!process.env.ANTHROPIC_API_KEY
+    })
+
+    const claudeProcess = spawn('claude', [
+      '-p', prompt,
+      '--output-format', 'json',
+      '--permission-mode', 'bypassPermissions',
+      '--allowedTools', 'Bash,Read,Edit,Write,Grep,Glob'
+    ], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env
+      }
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    claudeProcess.stdout.on('data', (data: Buffer) => {
+      stdout += data.toString()
+    })
+
+    claudeProcess.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString()
+    })
+
+    claudeProcess.on('close', (code: number) => {
+      logWithContext('CLAUDE_CLI', 'Claude Code CLI process completed', {
+        exitCode: code,
+        stdoutLength: stdout.length,
+        stderrLength: stderr.length
+      })
+
+      if (code === 0) {
+        try {
+          // Parse JSON output from CLI
+          const lines = stdout.split('\n').filter(line => line.trim())
+          let output = ''
+          let turns = 0
+
+          // Process each line that contains JSON
+          for (const line of lines) {
+            try {
+              const parsed = JSON.parse(line)
+              if (parsed.type === 'message' && parsed.content) {
+                turns++
+                if (Array.isArray(parsed.content)) {
+                  const textContent = parsed.content
+                    .filter((item: any) => item.type === 'text')
+                    .map((item: any) => item.text)
+                    .join('\n\n')
+                  if (textContent.trim()) {
+                    output = textContent
+                  }
+                } else if (typeof parsed.content === 'string') {
+                  output = parsed.content
+                }
+              }
+            } catch (parseError) {
+              // Not JSON, might be regular output
+              if (line.trim()) {
+                output += line + '\n'
+              }
+            }
+          }
+
+          resolve({
+            success: true,
+            output: output.trim() || stdout.trim(),
+            turns
+          })
+        } catch (parseError) {
+          logWithContext('CLAUDE_CLI', 'Error parsing CLI output', {
+            error: (parseError as Error).message,
+            stdout: stdout.substring(0, 500)
+          })
+          resolve({
+            success: true,
+            output: stdout.trim(),
+            turns: 1
+          })
+        }
+      } else {
+        resolve({
+          success: false,
+          error: stderr || `Process exited with code ${code}`,
+          output: stdout
+        })
+      }
+    })
+
+    claudeProcess.on('error', (error: Error) => {
+      logWithContext('CLAUDE_CLI', 'Claude Code CLI spawn error', {
+        error: error.message
+      })
+      resolve({
+        success: false,
+        error: error.message
+      })
+    })
+  })
+}
 
 // Enhanced logging utility with context
 function logWithContext(context: string, message: string, data?: any): void {
@@ -322,7 +437,7 @@ Work step by step and provide clear explanations of your approach.
 }
 
 
-// Process issue with Claude Code and handle GitHub operations directly
+// Process issue with Claude Code CLI and handle GitHub operations directly
 async function processIssue(issueContext: IssueContext, githubToken: string): Promise<ContainerResponse> {
   logWithContext('ISSUE_PROCESSOR', 'Starting issue processing', {
     repositoryName: issueContext.repositoryName,
@@ -330,8 +445,7 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
     title: issueContext.title
   })
 
-  const results: SDKMessage[] = []
-  let turnCount = 0
+  let claudeResponse: ClaudeCliResponse | null = null
 
   try {
     // 1. Setup workspace with repository clone
@@ -356,8 +470,8 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
       promptLength: prompt.length
     })
 
-    // 4. Query Claude Code in the workspace directory
-    logWithContext('ISSUE_PROCESSOR', 'Starting Claude Code query')
+    // 4. Execute Claude Code CLI in the workspace directory
+    logWithContext('ISSUE_PROCESSOR', 'Starting Claude Code CLI execution')
 
     // Change working directory to the cloned repository
     const originalCwd = process.cwd()
@@ -366,72 +480,39 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
     try {
       const claudeStartTime = Date.now()
 
-      logWithContext('CLAUDE_CODE', 'Changed working directory for Claude Code execution', {
+      logWithContext('CLAUDE_CODE', 'Changed working directory for Claude Code CLI execution', {
         originalCwd,
         newCwd: workspaceDir
       })
 
-      try {
-        logWithContext('CLAUDE_CODE', 'Starting Claude Code SDK query', {
-          promptLength: prompt.length,
-          workingDirectory: process.cwd(),
-          hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
-          keyPrefix: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 7) + '...' : 'none'
-        })
+      logWithContext('CLAUDE_CODE', 'Starting Claude Code CLI query', {
+        promptLength: prompt.length,
+        workingDirectory: process.cwd(),
+        hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+        keyPrefix: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 7) + '...' : 'none'
+      })
 
-        for await (const message of query({
-          prompt,
-          options: {permissionMode: 'bypassPermissions'}
-        })) {
-          turnCount++
-          results.push(message)
+      claudeResponse = await executeClaudeCodeCli(prompt)
 
-          // Log message details (message structure depends on SDK version)
-          logWithContext('CLAUDE_CODE', `Turn ${turnCount} completed`, {
-            type: message.type,
-            messageKeys: Object.keys(message),
-            hasContent: !!(message as any).content,
-            hasText: !!(message as any).text,
-            hasMessage: !!(message as any).message,
-            turnCount,
-            messagePreview: JSON.stringify(message).substring(0, 500) + '...'
-          })
-        }
-
-        logWithContext('CLAUDE_CODE', 'Claude Code SDK query completed successfully', {
-          totalTurns: turnCount,
-          totalResults: results.length
-        })
-      } catch (claudeInnerError) {
-        logWithContext('CLAUDE_CODE', 'Error in Claude Code SDK query loop', {
-          error: (claudeInnerError as Error).message,
-          stack: (claudeInnerError as Error).stack,
-          turnCount,
-          resultsCount: results.length,
-          errorType: (claudeInnerError as Error).constructor.name
-        })
-        throw claudeInnerError
+      if (!claudeResponse.success) {
+        throw new Error(`Claude Code CLI failed: ${claudeResponse.error}`)
       }
 
       const claudeEndTime = Date.now()
       const claudeDuration = claudeEndTime - claudeStartTime
 
-      logWithContext('ISSUE_PROCESSOR', 'Claude Code query completed', {
-        totalTurns: turnCount,
+      logWithContext('CLAUDE_CODE', 'Claude Code CLI query completed successfully', {
+        turns: claudeResponse.turns || 1,
         duration: claudeDuration,
-        resultsCount: results.length
+        outputLength: claudeResponse.output?.length || 0
       })
 
       // 5. Check for file changes using git
       const hasChanges = await detectGitChanges(workspaceDir)
       logWithContext('ISSUE_PROCESSOR', 'Change detection completed', {hasChanges})
 
-      // 6. Get solution text from Claude Code
-      let solution = ''
-      if (results.length > 0) {
-        const lastResult = results[results.length - 1]
-        solution = getMessageText(lastResult)
-      }
+      // 6. Get solution text from Claude Code CLI
+      const solution = claudeResponse.output || 'No response from Claude Code'
 
       if (hasChanges) {
         // Generate branch name
@@ -511,10 +592,10 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
       }
 
     } catch (claudeError) {
-      logWithContext('ISSUE_PROCESSOR', 'Error during Claude Code query', {
+      logWithContext('ISSUE_PROCESSOR', 'Error during Claude Code CLI execution', {
         error: (claudeError as Error).message,
-        turnCount,
-        resultsCount: results.length
+        hasResponse: !!claudeResponse,
+        responseError: claudeResponse?.error
       })
       throw claudeError
     } finally {
@@ -528,8 +609,8 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
       error: (error as Error).message,
       repositoryName: issueContext.repositoryName,
       issueNumber: issueContext.issueNumber,
-      turnCount,
-      resultsCount: results.length
+      hasClaudeResponse: !!claudeResponse,
+      claudeResponseError: claudeResponse?.error
     })
 
     return {
@@ -748,41 +829,22 @@ async function testClaudeHandler(req: http.IncomingMessage, res: http.ServerResp
       })
 
       try {
+        const cliResponse = await executeClaudeCodeCli(testPrompt)
 
-        let claudeResponse = ''
-        let turnCount = 0
-
-
-        for await (const message of query({
-          prompt: testPrompt,
-          options: {permissionMode: 'bypassPermissions'}
-        })) {
-          turnCount++
-
-          logWithContext('TEST_CLAUDE', `Claude Code turn ${turnCount}`, {
-            type: message.type,
-            hasContent: !!(message as any).content,
-            hasMessage: !!(message as any).message
-          })
-
-          // Extract response text
-          const messageText = getMessageText(message)
-          if (messageText.trim()) {
-            claudeResponse = messageText
-            break // Take the first meaningful response
-          }
+        if (!cliResponse.success) {
+          throw new Error(`Claude Code CLI failed: ${cliResponse.error}`)
         }
 
-        logWithContext('TEST_CLAUDE', 'Claude Code test completed successfully', {
-          turnCount,
-          responseLength: claudeResponse.length
+        logWithContext('TEST_CLAUDE', 'Claude Code CLI test completed successfully', {
+          turns: cliResponse.turns || 0,
+          responseLength: cliResponse.output?.length || 0
         })
 
         res.writeHead(200, {'Content-Type': 'application/json'})
         res.end(JSON.stringify({
           success: true,
-          message: claudeResponse || 'Claude Code executed but no response received',
-          turns: turnCount
+          message: cliResponse.output || 'Claude Code executed but no response received',
+          turns: cliResponse.turns || 1
         }))
 
       } catch (claudeError) {
@@ -886,58 +948,38 @@ async function requestHandler(req: http.IncomingMessage, res: http.ServerRespons
 async function runContainerDiagnostics(): Promise<void> {
   logWithContext('DIAGNOSTICS', 'Running container startup diagnostics')
 
-  // Check Claude Code SDK availability
+  // Check Claude Code CLI availability
   try {
-    // Test if the SDK can be imported and basic functionality works
-    const testPrompt = "Hello, this is a test. Please respond with 'SDK working'."
-    let sdkWorking = false
-    let sdkError: string | null = null
-
-    // Quick SDK test with timeout
-    const sdkTest = new Promise<boolean>((resolve) => {
-      const timeout = setTimeout(() => {
-        resolve(false)
-        logWithContext('DIAGNOSTICS', 'Claude Code SDK test timed out')
-      }, 3000)
-
-      if (!process.env.ANTHROPIC_API_KEY) {
-        clearTimeout(timeout)
-        resolve(false)
-        logWithContext('DIAGNOSTICS', 'Claude Code SDK test skipped - no API key')
-        return
-      }
-
-      // Very basic test - just try to initialize
-      try {
-        // Test that we can import and the function exists
-        if (typeof query === 'function') {
-          clearTimeout(timeout)
-          resolve(true)
-          logWithContext('DIAGNOSTICS', 'Claude Code SDK import successful')
-        } else {
-          clearTimeout(timeout)
-          resolve(false)
-          logWithContext('DIAGNOSTICS', 'Claude Code SDK import failed - query not a function')
-        }
-      } catch (error) {
-        clearTimeout(timeout)
-        resolve(false)
-        logWithContext('DIAGNOSTICS', 'Claude Code SDK test error', {
-          error: (error as Error).message
-        })
+    const claudeProcess = spawn('claude', ['--version'], {
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        PATH: `/root/.local/bin:${process.env.PATH}`
       }
     })
 
-    sdkWorking = await sdkTest
+    let claudeOutput = ''
+    claudeProcess.stdout?.on('data', (data) => {claudeOutput += data.toString()})
 
-    logWithContext('DIAGNOSTICS', 'Claude Code SDK check', {
-      isAvailable: sdkWorking,
-      hasApiKey: !!process.env.ANTHROPIC_API_KEY,
-      error: sdkError
+    claudeProcess.on('close', (code) => {
+      logWithContext('DIAGNOSTICS', 'Claude Code CLI availability check', {
+        exitCode: code,
+        version: claudeOutput.trim(),
+        isAvailable: code === 0,
+        hasApiKey: !!process.env.ANTHROPIC_API_KEY
+      })
+    })
+
+    claudeProcess.on('error', (error) => {
+      logWithContext('DIAGNOSTICS', 'Claude Code CLI availability check error', {
+        error: error.message,
+        isAvailable: false,
+        hasApiKey: !!process.env.ANTHROPIC_API_KEY
+      })
     })
 
   } catch (error) {
-    logWithContext('DIAGNOSTICS', 'Error checking Claude Code SDK', {
+    logWithContext('DIAGNOSTICS', 'Error checking Claude Code CLI availability', {
       error: (error as Error).message,
       isAvailable: false
     })
@@ -1096,42 +1138,4 @@ process.on('unhandledRejection', (reason, promise) => {
   })
 })
 
-// Helper function to extract text from SDK message
-function getMessageText(message: SDKMessage): string {
-  // Handle different message types from the SDK
-  if ('content' in message && typeof message.content === 'string') {
-    return message.content
-  }
-  if ('text' in message && typeof message.text === 'string') {
-    return message.text
-  }
-  // If message has content array, extract text from it
-  if ('content' in message && Array.isArray(message.content)) {
-    const textContent = message.content
-      .filter(item => item.type === 'text')
-      .map(item => item.text)
-      .join('\n\n')
-
-    if (textContent.trim()) {
-      return textContent
-    }
-  }
-
-  // Try to extract from message object if it has a message property
-  if ('message' in message && message.message && typeof message.message === 'object') {
-    const msg = message.message as any
-    if ('content' in msg && Array.isArray(msg.content)) {
-      const textContent = msg.content
-        .filter((item: any) => item.type === 'text')
-        .map((item: any) => item.text)
-        .join('\n\n')
-
-      if (textContent.trim()) {
-        return textContent
-      }
-    }
-  }
-
-  // Last resort: return a generic message instead of JSON
-  return JSON.stringify(message)
-}
+// Helper function removed - CLI output is handled directly in executeClaudeCodeCli
