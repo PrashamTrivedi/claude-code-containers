@@ -337,12 +337,12 @@ export default {
 </head>
 <body>
     <div class="header">
-        <h1 class="title">🤖 Claude Code Container Integration</h1>
+        <h1 class="title">Claude Code Container Integration</h1>
         <p class="subtitle">AI-powered GitHub issue processing with Claude Code</p>
     </div>
 
     <div class="section">
-        <h3>🚀 Setup Instructions</h3>
+        <h3>Setup Instructions</h3>
         <div class="step">
             <span class="step-number">1</span>
             <strong>Configure Claude Code:</strong> Set up your Anthropic API key for Claude integration
@@ -361,7 +361,7 @@ export default {
     </div>
 
     <div class="section">
-        <h3>🧪 Testing & Validation</h3>
+        <h3>Testing & Validation</h3>
         <div class="link-group">
             <a href="/test-claude" class="btn test">Test Claude API</a>
             <span style="margin-left: 10px; color: #666;">Test your Claude configuration with a Star Wars greeting!</span>
@@ -369,7 +369,7 @@ export default {
     </div>
 
     <div class="section">
-        <h3>🔧 Container Testing Routes</h3>
+        <h3>Container Testing Routes</h3>
         <p>These routes are for testing the container infrastructure:</p>
         <div class="link-group">
             <a href="/container" class="btn container">Basic Container</a>
@@ -380,7 +380,7 @@ export default {
     </div>
 
     <div class="success-note">
-        <strong>🎉 Ready to go?</strong> Once both setups are complete, create GitHub issues in your repositories to trigger automatic Claude Code processing!
+        <strong>Ready to go?</strong> Once both setups are complete, create GitHub issues in your repositories to trigger automatic Claude Code processing!
     </div>
 
     <div style="text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef;">
