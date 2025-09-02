@@ -415,6 +415,151 @@ export default {
         response = await sandboxManager.fetch(sandboxRequest)
       }
 
+      // Mock webhook endpoint for testing
+      else if (pathname === '/test/mock-issue-webhook') {
+        logWithContext('MAIN_HANDLER', 'Processing mock issue webhook')
+        routeMatched = true
+        
+        // Create a mock GitHub issue webhook payload
+        const mockWebhookPayload = {
+          action: 'opened',
+          issue: {
+            id: Date.now(),
+            number: Math.floor(Math.random() * 1000) + 1,
+            title: 'Test Issue for Claude Code Migration',
+            body: 'This is a test issue to verify the new Daytona-based architecture works correctly. Please implement a simple "Hello World" function.',
+            user: {
+              login: 'test-user'
+            },
+            labels: [
+              { name: 'enhancement' },
+              { name: 'test' }
+            ]
+          },
+          repository: {
+            id: 123456,
+            name: 'test-repo',
+            full_name: 'test-org/test-repo',
+            clone_url: 'https://github.com/test-org/test-repo.git'
+          },
+          installation: {
+            id: 12345678
+          }
+        }
+
+        try {
+          // Import and call the webhook handler
+          const { handleGitHubWebhook } = await import('./handlers/github_webhook')
+          
+          const mockRequest = new Request('http://localhost/webhooks/github', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-GitHub-Event': 'issues',
+              'X-GitHub-Delivery': 'mock-' + Date.now(),
+              'X-Hub-Signature-256': 'mock-signature'
+            },
+            body: JSON.stringify(mockWebhookPayload)
+          })
+
+          const webhookResponse = await handleGitHubWebhook(mockRequest, env)
+          
+          response = new Response(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mock Webhook Test - Claude Code Integration</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+            background: #fafbfc;
+        }
+        .result-card {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin: 20px 0;
+        }
+        .success { border-left: 4px solid #28a745; }
+        .error { border-left: 4px solid #dc3545; }
+        .code {
+            background: #f6f8fa;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: 'SFMono-Regular', Monaco, Consolas, monospace;
+            overflow-x: auto;
+        }
+        .btn {
+            display: inline-block;
+            background: #0969da;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 8px 8px 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="result-card ${webhookResponse.status === 200 ? 'success' : 'error'}">
+        <h1>🧪 Mock Issue Webhook Test</h1>
+        <p><strong>Status:</strong> ${webhookResponse.status} ${webhookResponse.statusText || 'OK'}</p>
+        <p><strong>Test Payload:</strong></p>
+        <div class="code">${JSON.stringify(mockWebhookPayload, null, 2)}</div>
+        
+        ${webhookResponse.status === 200 
+          ? '<p>✅ <strong>Success!</strong> Mock webhook processed successfully. Check your logs to see the full flow execution.</p>' 
+          : '<p>❌ <strong>Error!</strong> Webhook processing failed. Check your configuration and logs.</p>'
+        }
+        
+        <p><strong>Next Steps:</strong></p>
+        <ul>
+            <li>Check the Worker logs for detailed execution information</li>
+            <li>Verify that all components (Claude, Daytona, GitHub) are properly configured</li>
+            <li>Test with a real GitHub repository and issue</li>
+        </ul>
+
+        <a href="/status" class="btn">Check Configuration Status</a>
+        <a href="/" class="btn">Back to Home</a>
+    </div>
+</body>
+</html>`, {
+            headers: { 'Content-Type': 'text/html' }
+          })
+
+        } catch (error) {
+          logWithContext('MAIN_HANDLER', 'Mock webhook test failed', {
+            error: (error as Error).message
+          })
+
+          response = new Response(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mock Webhook Test Failed</title>
+    <style>body { font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }</style>
+</head>
+<body>
+    <h1>🚨 Mock Webhook Test Failed</h1>
+    <p><strong>Error:</strong> ${(error as Error).message}</p>
+    <p>This indicates a configuration or implementation issue. Please check your setup and try again.</p>
+    <a href="/status">Check Configuration Status</a> | <a href="/">Back to Home</a>
+</body>
+</html>`, {
+            status: 500,
+            headers: { 'Content-Type': 'text/html' }
+          })
+        }
+      }
+
       // Default home page
       else {
         logWithContext('MAIN_HANDLER', 'Serving home page')
@@ -563,6 +708,10 @@ export default {
         <div class="link-group">
             <a href="/test-claude" class="btn test">Test Claude API</a>
             <span style="margin-left: 10px; color: #666;">Test your Claude configuration with a Star Wars greeting!</span>
+        </div>
+        <div class="link-group">
+            <a href="/test/mock-issue-webhook" class="btn test">Test Issue Processing Flow</a>
+            <span style="margin-left: 10px; color: #666;">Test the complete Daytona-based issue processing pipeline!</span>
         </div>
     </div>
 

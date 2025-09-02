@@ -170,4 +170,99 @@ export class GitHubAPI {
       sha: data.sha
     };
   }
+
+  // Enhanced branch operations for Worker-based PR creation
+  async createBranch(owner: string, repo: string, branchName: string, baseBranch: string = 'main'): Promise<void> {
+    logWithContext('GITHUB_API', 'Creating branch from Worker', { owner, repo, branchName, baseBranch });
+    
+    // First get the SHA of the base branch
+    const baseSha = await this.getDefaultBranchSha(owner, repo);
+    
+    const response = await this.makeAuthenticatedRequest(`/repos/${owner}/${repo}/git/refs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ref: `refs/heads/${branchName}`,
+        sha: baseSha
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      logWithContext('GITHUB_API', 'Failed to create branch from Worker', { status: response.status, error });
+      throw new Error(`Failed to create branch: ${response.status} ${error}`);
+    }
+
+    logWithContext('GITHUB_API', 'Branch created successfully from Worker', { branchName });
+  }
+
+  // Create pull request directly from Worker
+  async createPullRequestFromWorker(
+    owner: string, 
+    repo: string, 
+    title: string, 
+    body: string, 
+    headBranch: string, 
+    baseBranch: string = 'main'
+  ): Promise<any> {
+    logWithContext('GITHUB_API', 'Creating pull request from Worker', { 
+      owner, 
+      repo, 
+      title, 
+      headBranch, 
+      baseBranch 
+    });
+    
+    const response = await this.makeAuthenticatedRequest(`/repos/${owner}/${repo}/pulls`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title,
+        body,
+        head: headBranch,
+        base: baseBranch
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      logWithContext('GITHUB_API', 'Failed to create pull request from Worker', { status: response.status, error });
+      throw new Error(`Failed to create pull request: ${response.status} ${error}`);
+    }
+
+    const pullRequest = await response.json();
+    logWithContext('GITHUB_API', 'Pull request created successfully from Worker', { 
+      pullRequestNumber: pullRequest.number,
+      pullRequestUrl: pullRequest.html_url
+    });
+
+    return pullRequest;
+  }
+
+  // Post comment on issue (enhanced for Worker usage)
+  async postIssueComment(owner: string, repo: string, issueNumber: number, comment: string): Promise<any> {
+    logWithContext('GITHUB_API', 'Posting issue comment from Worker', { 
+      owner, 
+      repo, 
+      issueNumber, 
+      commentLength: comment.length 
+    });
+    
+    const response = await this.makeAuthenticatedRequest(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body: comment })
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      logWithContext('GITHUB_API', 'Failed to post issue comment from Worker', { status: response.status, error });
+      throw new Error(`Failed to post issue comment: ${response.status} ${error}`);
+    }
+
+    const commentData = await response.json();
+    logWithContext('GITHUB_API', 'Issue comment posted successfully from Worker', { 
+      commentId: commentData.id,
+      commentUrl: commentData.html_url
+    });
+
+    return commentData;
+  }
 }

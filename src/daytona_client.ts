@@ -379,6 +379,248 @@ export class DaytonaClient {
   }
 
   /**
+   * Clone repository using git operations
+   */
+  async cloneRepository(
+    sandboxId: string,
+    gitUrl: string,
+    workspaceDir: string,
+    authToken: string
+  ): Promise<ExecuteCommandResponse> {
+    logWithContext('DAYTONA_CLIENT', 'Cloning repository via SDK', {
+      sandboxId,
+      gitUrl,
+      workspaceDir
+    })
+
+    // Create the workspace directory and clone the repo
+    const cloneCommand = `mkdir -p ${workspaceDir} && cd ${workspaceDir} && git clone https://x-access-token:${authToken}@${gitUrl.replace('https://', '')} .`
+
+    try {
+      const response = await this.executeCommand(sandboxId, {
+        command: cloneCommand,
+        workingDirectory: '/'
+      })
+
+      logWithContext('DAYTONA_CLIENT', 'Repository cloned successfully', {
+        sandboxId,
+        exitCode: response.exitCode,
+        stdoutLength: response.stdout.length
+      })
+
+      return response
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error cloning repository', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to clone repository: ${(error as Error).message}`)
+    }
+  }
+
+  /**
+   * Execute Claude CLI with specific command format
+   */
+  async executeClaudeCommand(
+    sandboxId: string,
+    prompt: string
+  ): Promise<ExecuteCommandResponse> {
+    logWithContext('DAYTONA_CLIENT', 'Executing Claude CLI command', {
+      sandboxId,
+      promptLength: prompt.length
+    })
+
+    // Base64 encode the prompt  
+    const messageBase64 = btoa(prompt)
+
+    // Execute Claude CLI with the exact required format
+    const claudeCommand = `claude -c "cd /workspace && claude --dangerously-skip-permissions -p \"$(echo '${messageBase64}' | base64 -d)\" --continue --output-format json"`
+
+    try {
+      const response = await this.executeCommand(sandboxId, {
+        command: claudeCommand,
+        workingDirectory: '/workspace'
+      })
+
+      logWithContext('DAYTONA_CLIENT', 'Claude CLI executed successfully', {
+        sandboxId,
+        exitCode: response.exitCode,
+        stdoutLength: response.stdout.length,
+        stderrLength: response.stderr.length
+      })
+
+      return response
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error executing Claude CLI', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to execute Claude CLI: ${(error as Error).message}`)
+    }
+  }
+
+  /**
+   * Get git status to check for file changes
+   */
+  async getGitStatus(
+    sandboxId: string,
+    workspaceDir: string = '/workspace'
+  ): Promise<ExecuteCommandResponse> {
+    logWithContext('DAYTONA_CLIENT', 'Getting git status', {
+      sandboxId,
+      workspaceDir
+    })
+
+    try {
+      const response = await this.executeCommand(sandboxId, {
+        command: 'git status --porcelain',
+        workingDirectory: workspaceDir
+      })
+
+      logWithContext('DAYTONA_CLIENT', 'Git status retrieved', {
+        sandboxId,
+        exitCode: response.exitCode,
+        hasChanges: response.stdout.trim().length > 0
+      })
+
+      return response
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error getting git status', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to get git status: ${(error as Error).message}`)
+    }
+  }
+
+  /**
+   * Create commit and push changes
+   */
+  async createCommitAndPush(
+    sandboxId: string,
+    workspaceDir: string,
+    message: string,
+    branchName: string
+  ): Promise<ExecuteCommandResponse> {
+    logWithContext('DAYTONA_CLIENT', 'Creating commit and pushing', {
+      sandboxId,
+      workspaceDir,
+      branchName,
+      message
+    })
+
+    // Multi-step git operations: create branch, add files, commit, and push
+    const gitCommands = `
+cd ${workspaceDir} && \
+git checkout -b ${branchName} && \
+git add . && \
+git commit -m "${message}" && \
+git push origin ${branchName}
+    `.trim()
+
+    try {
+      const response = await this.executeCommand(sandboxId, {
+        command: gitCommands,
+        workingDirectory: workspaceDir
+      })
+
+      logWithContext('DAYTONA_CLIENT', 'Commit and push completed', {
+        sandboxId,
+        branchName,
+        exitCode: response.exitCode,
+        stdoutLength: response.stdout.length
+      })
+
+      return response
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error creating commit and pushing', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to create commit and push: ${(error as Error).message}`)
+    }
+  }
+
+  /**
+   * Read file from sandbox
+   */
+  async readFile(
+    sandboxId: string,
+    filePath: string
+  ): Promise<string> {
+    logWithContext('DAYTONA_CLIENT', 'Reading file from sandbox', {
+      sandboxId,
+      filePath
+    })
+
+    try {
+      const response = await this.executeCommand(sandboxId, {
+        command: `cat "${filePath}"`,
+        workingDirectory: '/'
+      })
+
+      if (response.exitCode !== 0) {
+        throw new Error(`File not found or read error: ${response.stderr}`)
+      }
+
+      logWithContext('DAYTONA_CLIENT', 'File read successfully', {
+        sandboxId,
+        filePath,
+        contentLength: response.stdout.length
+      })
+
+      return response.stdout
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error reading file', {
+        sandboxId,
+        filePath,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to read file: ${(error as Error).message}`)
+    }
+  }
+
+  /**
+   * Write file to sandbox
+   */
+  async writeFile(
+    sandboxId: string,
+    filePath: string,
+    content: string
+  ): Promise<ExecuteCommandResponse> {
+    logWithContext('DAYTONA_CLIENT', 'Writing file to sandbox', {
+      sandboxId,
+      filePath,
+      contentLength: content.length
+    })
+
+    // Escape content for shell safety
+    const escapedContent = content.replace(/'/g, "'\"'\"'")
+    
+    try {
+      const response = await this.executeCommand(sandboxId, {
+        command: `echo '${escapedContent}' > "${filePath}"`,
+        workingDirectory: '/'
+      })
+
+      logWithContext('DAYTONA_CLIENT', 'File written successfully', {
+        sandboxId,
+        filePath,
+        exitCode: response.exitCode
+      })
+
+      return response
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error writing file', {
+        sandboxId,
+        filePath,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to write file: ${(error as Error).message}`)
+    }
+  }
+
+  /**
    * Health check - verify SDK connectivity
    */
   async healthCheck(): Promise<boolean> {

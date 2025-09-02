@@ -25,6 +25,30 @@ export interface CreateSandboxDORequest {
   repositoryName?: string
 }
 
+export interface ProcessIssueRequest {
+  issue: any
+  repository: any
+  installationToken: string
+  claudeApiKey: string
+}
+
+export interface CloneAndSetupRequest {
+  sandboxId: string
+  gitUrl: string
+  installationToken: string
+  workspaceDir?: string
+}
+
+export interface ExecuteClaudeRequest {
+  sandboxId: string
+  prompt: string
+}
+
+export interface GetChangesRequest {
+  sandboxId: string
+  workspaceDir?: string
+}
+
 export interface ExecuteCommandDORequest {
   sandboxId: string
   command: string
@@ -155,6 +179,18 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         
         case '/health':
           return this.handleHealthCheck(request)
+        
+        case '/process-issue':
+          return this.handleProcessIssue(request)
+        
+        case '/clone-and-setup':
+          return this.handleCloneAndSetup(request)
+        
+        case '/execute-claude':
+          return this.handleExecuteClaude(request)
+        
+        case '/get-changes':
+          return this.handleGetChanges(request)
         
         default:
           return Response.json({
@@ -463,6 +499,238 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       return Response.json({
         success: false,
         error: (error as Error).message
+      } as SandboxManagerResponse, { status: 500 })
+    }
+  }
+
+  /**
+   * Complete issue processing flow
+   */
+  private async handleProcessIssue(request: Request): Promise<Response> {
+    const processRequest: ProcessIssueRequest = await request.json()
+    
+    logWithContext('SANDBOX_MANAGER_DO', 'Processing issue with complete flow', {
+      issueNumber: processRequest.issue.number,
+      repositoryName: processRequest.repository.full_name
+    })
+
+    try {
+      const sandboxName = `claude-issue-${processRequest.issue.id}`
+      const workspaceDir = '/workspace'
+      
+      // Step 1: Create sandbox
+      const sandbox = await this.daytonaClient!.createSandbox({
+        name: sandboxName,
+        projectName: processRequest.repository.name,
+        gitUrl: processRequest.repository.clone_url,
+        image: 'claude-code-container',
+        envVars: {
+          ANTHROPIC_API_KEY: processRequest.claudeApiKey,
+          GITHUB_TOKEN: processRequest.installationToken
+        }
+      })
+
+      // Wait for sandbox to be ready
+      await this.daytonaClient!.waitForSandboxStatus(sandbox.id, 'running', 180000, 3000)
+
+      // Step 2: Clone repository
+      await this.daytonaClient!.cloneRepository(
+        sandbox.id,
+        processRequest.repository.clone_url,
+        workspaceDir,
+        processRequest.installationToken
+      )
+
+      // Step 3: Build Claude prompt
+      const prompt = `You are working on GitHub issue #${processRequest.issue.number}: "${processRequest.issue.title}"
+
+Issue Description:
+${processRequest.issue.body || 'No description provided'}
+
+Labels: ${processRequest.issue.labels?.map((label: any) => label.name).join(', ') || 'None'}
+Author: ${processRequest.issue.user.login}
+
+The repository has been cloned to your current working directory. Please:
+1. Explore the codebase to understand the structure and relevant files
+2. Analyze the issue requirements thoroughly
+3. Implement a solution that addresses the issue
+4. Write appropriate tests if needed
+5. Ensure code quality and consistency with existing patterns
+
+**IMPORTANT: If you make any file changes, please create a file called '.claude-pr-summary.md' in the root directory with a concise summary (1-3 sentences) of what changes you made and why. This will be used for the pull request description.**
+
+Work step by step and provide clear explanations of your approach.`
+
+      // Step 4: Execute Claude CLI
+      const claudeResult = await this.daytonaClient!.executeClaudeCommand(sandbox.id, prompt)
+
+      // Step 5: Check for changes
+      const gitStatus = await this.daytonaClient!.getGitStatus(sandbox.id, workspaceDir)
+      const hasChanges = gitStatus.stdout.trim().length > 0
+
+      let prSummary = 'Claude Code made changes to address the GitHub issue.'
+      if (hasChanges) {
+        try {
+          prSummary = await this.daytonaClient!.readFile(sandbox.id, '/workspace/.claude-pr-summary.md')
+        } catch {
+          // Use default summary if file doesn't exist
+        }
+      }
+
+      return Response.json({
+        success: true,
+        data: {
+          sandboxId: sandbox.id,
+          claudeResult,
+          hasChanges,
+          prSummary,
+          gitStatus: gitStatus.stdout
+        },
+        sandboxId: sandbox.id
+      } as SandboxManagerResponse)
+
+    } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error processing issue', {
+        error: (error as Error).message
+      })
+
+      return Response.json({
+        success: false,
+        error: (error as Error).message
+      } as SandboxManagerResponse, { status: 500 })
+    }
+  }
+
+  /**
+   * Clone repository and prepare workspace
+   */
+  private async handleCloneAndSetup(request: Request): Promise<Response> {
+    const cloneRequest: CloneAndSetupRequest = await request.json()
+    
+    logWithContext('SANDBOX_MANAGER_DO', 'Cloning and setting up workspace', {
+      sandboxId: cloneRequest.sandboxId,
+      gitUrl: cloneRequest.gitUrl
+    })
+
+    try {
+      const workspaceDir = cloneRequest.workspaceDir || '/workspace'
+      
+      const result = await this.daytonaClient!.cloneRepository(
+        cloneRequest.sandboxId,
+        cloneRequest.gitUrl,
+        workspaceDir,
+        cloneRequest.installationToken
+      )
+
+      return Response.json({
+        success: true,
+        data: result,
+        sandboxId: cloneRequest.sandboxId
+      } as SandboxManagerResponse)
+
+    } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error cloning repository', {
+        sandboxId: cloneRequest.sandboxId,
+        error: (error as Error).message
+      })
+
+      return Response.json({
+        success: false,
+        error: (error as Error).message,
+        sandboxId: cloneRequest.sandboxId
+      } as SandboxManagerResponse, { status: 500 })
+    }
+  }
+
+  /**
+   * Execute Claude CLI with proper command format
+   */
+  private async handleExecuteClaude(request: Request): Promise<Response> {
+    const executeRequest: ExecuteClaudeRequest = await request.json()
+    
+    logWithContext('SANDBOX_MANAGER_DO', 'Executing Claude CLI', {
+      sandboxId: executeRequest.sandboxId,
+      promptLength: executeRequest.prompt.length
+    })
+
+    try {
+      const result = await this.daytonaClient!.executeClaudeCommand(
+        executeRequest.sandboxId,
+        executeRequest.prompt
+      )
+
+      return Response.json({
+        success: true,
+        data: result,
+        sandboxId: executeRequest.sandboxId
+      } as SandboxManagerResponse)
+
+    } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error executing Claude CLI', {
+        sandboxId: executeRequest.sandboxId,
+        error: (error as Error).message
+      })
+
+      return Response.json({
+        success: false,
+        error: (error as Error).message,
+        sandboxId: executeRequest.sandboxId
+      } as SandboxManagerResponse, { status: 500 })
+    }
+  }
+
+  /**
+   * Get git changes and PR summary
+   */
+  private async handleGetChanges(request: Request): Promise<Response> {
+    const changesRequest: GetChangesRequest = await request.json()
+    
+    logWithContext('SANDBOX_MANAGER_DO', 'Getting git changes', {
+      sandboxId: changesRequest.sandboxId
+    })
+
+    try {
+      const workspaceDir = changesRequest.workspaceDir || '/workspace'
+      
+      const gitStatus = await this.daytonaClient!.getGitStatus(
+        changesRequest.sandboxId,
+        workspaceDir
+      )
+      
+      const hasChanges = gitStatus.stdout.trim().length > 0
+      
+      let prSummary = 'Claude Code made changes to address the GitHub issue.'
+      if (hasChanges) {
+        try {
+          prSummary = await this.daytonaClient!.readFile(
+            changesRequest.sandboxId,
+            `${workspaceDir}/.claude-pr-summary.md`
+          )
+        } catch {
+          // Use default summary if file doesn't exist
+        }
+      }
+
+      return Response.json({
+        success: true,
+        data: {
+          hasChanges,
+          gitStatus: gitStatus.stdout,
+          prSummary
+        },
+        sandboxId: changesRequest.sandboxId
+      } as SandboxManagerResponse)
+
+    } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error getting changes', {
+        sandboxId: changesRequest.sandboxId,
+        error: (error as Error).message
+      })
+
+      return Response.json({
+        success: false,
+        error: (error as Error).message,
+        sandboxId: changesRequest.sandboxId
       } as SandboxManagerResponse, { status: 500 })
     }
   }
