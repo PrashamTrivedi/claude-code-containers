@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "claude-code-containers",
+	"name": "claude-code-daytona",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-08-23",
 	"compatibility_flags": [
@@ -9,26 +9,22 @@
 	"observability": {
 		"enabled": true
 	},
-	"containers": [
-		{
-			"class_name": "MyContainer",
-			"image": "./Dockerfile",
-			"max_instances": 10,
-			"name": "claude-code-containers"
-		}
-	],
+	"vars": {
+		"DAYTONA_API_URL": "https://api.daytona.io",
+		"ENVIRONMENT": "development"
+	},
 	"durable_objects": {
 		"bindings": [
 			{
-				"class_name": "MyContainer",
-				"name": "MY_CONTAINER"
+				"class_name": "DaytonaSandboxManagerDO",
+				"name": "DAYTONA_SANDBOX_MANAGER"
 			}
 		]
 	},
 	"migrations": [
 		{
 			"new_sqlite_classes": [
-				"MyContainer"
+				"DaytonaSandboxManagerDO"
 			],
 			"tag": "v1"
 		}

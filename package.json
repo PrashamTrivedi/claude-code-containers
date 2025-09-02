@@ -1,6 +1,6 @@
 {
-	"name": "claude-code-containers-template",
-	"description": "Build a Container-enabled Worker",
+	"name": "claude-code-daytona-template",
+	"description": "Build a Daytona-enabled Worker",
 	"version": "0.0.3",
 	"main": "src/index.ts",
 	"private": true,
@@ -16,7 +16,6 @@
 		"wrangler": "^4.30.0"
 	},
 	"dependencies": {
-		"@cloudflare/containers": "0.0.25",
 		"@tsndr/cloudflare-worker-jwt": "^3.2.0"
 	},
 	"cloudflare": {
@@ -24,7 +23,7 @@
 		"products": [
 			"Workers",
 			"Durable Objects",
-			"Containers"
+			"Daytona"
 		],
 		"categories": [],
 		"icon_urls": [

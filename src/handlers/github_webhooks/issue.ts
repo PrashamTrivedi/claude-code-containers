@@ -1,31 +1,30 @@
 import {GitHubAPI} from "../../github_client"
 import {logWithContext} from "../../log"
-import {containerFetch, getRouteFromRequest} from "../../fetch"
 import {generateInstallationToken, getClaudeApiKey} from '../../kv_storage'
 import {getOrDiscoverInstallationId} from '../../github_installation_discovery'
+import {getDaytonaCredentials} from '../daytona_setup'
 
-// Simplified container response interface
-interface ContainerResponse {
+// Simplified sandbox response interface
+interface SandboxResponse {
   success: boolean
   message: string
   error?: string
 }
 
-// Route GitHub issue to Claude Code container
-async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, webhookData?: any): Promise<void> {
-  const containerName = `claude-issue-${issue.id}`
+// Route GitHub issue to Claude Code Daytona sandbox
+async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, webhookData?: any): Promise<void> {
+  const sandboxName = `claude-issue-${issue.id}`
 
-  logWithContext('CLAUDE_ROUTING', 'Routing issue to Claude Code container', {
+  logWithContext('CLAUDE_ROUTING', 'Routing issue to Claude Code Daytona sandbox', {
     issueNumber: issue.number,
     issueId: issue.id,
-    containerName,
-    repository: repository.full_name,
-    issue
+    sandboxName,
+    repository: repository.full_name
   })
 
-  // Create unique container for this issue
-  const id = env.MY_CONTAINER.idFromName(containerName)
-  const container = env.MY_CONTAINER.get(id)
+  // Get Daytona sandbox manager DO
+  const id = env.DAYTONA_SANDBOX_MANAGER.idFromName('default')
+  const sandboxManager = env.DAYTONA_SANDBOX_MANAGER.get(id)
 
   // Extract repository owner/name
   const [owner, repo] = repository.full_name.split('/')
@@ -85,8 +84,8 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
     throw new Error('Claude API key not configured. Please visit /claude-setup first.')
   }
 
-  // Prepare environment variables for the container
-  const issueContext = {
+  // Prepare environment variables for the sandbox
+  const issueEnvVars = {
     ANTHROPIC_API_KEY: claudeApiKey,
     GITHUB_TOKEN: installationToken,
     ISSUE_ID: issue.id.toString(),
@@ -96,63 +95,133 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
     ISSUE_LABELS: JSON.stringify(issue.labels?.map((label: any) => label.name) || []),
     REPOSITORY_URL: repository.clone_url,
     REPOSITORY_NAME: repository.full_name,
-    ISSUE_AUTHOR: issue.user.login,
-    MESSAGE: `Processing issue #${issue.number}: ${issue.title}`
+    ISSUE_AUTHOR: issue.user.login
   }
 
-  // Start Claude Code processing by calling the container
-  logWithContext('CLAUDE_ROUTING', 'Starting Claude Code container processing', {
-    containerName,
-    issueId: issueContext.ISSUE_ID
+  // Create and start Claude Code processing in Daytona sandbox
+  logWithContext('CLAUDE_ROUTING', 'Creating Daytona sandbox for issue processing', {
+    sandboxName,
+    issueId: issue.id.toString()
   })
 
   try {
-    const response = await containerFetch(container, new Request('http://internal/process-issue', {
+    // Step 1: Create sandbox with the repository cloned
+    const createResponse = await sandboxManager.fetch(new Request('http://internal/create', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(issueContext)
-    }), {
-      containerName,
-      route: '/process-issue'
+      body: JSON.stringify({
+        name: sandboxName,
+        projectName: repository.name,
+        gitUrl: repository.clone_url,
+        envVars: issueEnvVars,
+        issueId: issue.id.toString(),
+        repositoryName: repository.full_name
+      })
+    }))
+
+    logWithContext('CLAUDE_ROUTING', 'Sandbox creation response', {
+      status: createResponse.status,
+      statusText: createResponse.statusText
     })
 
-    logWithContext('CLAUDE_ROUTING', 'Claude Code container response', {
-      status: response.status,
-      statusText: response.statusText
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unable to read error response')
-      logWithContext('CLAUDE_ROUTING', 'Container returned error', {
-        status: response.status,
+    if (!createResponse.ok) {
+      const errorText = await createResponse.text().catch(() => 'Unable to read sandbox creation error')
+      logWithContext('CLAUDE_ROUTING', 'Sandbox creation failed', {
+        status: createResponse.status,
         errorText
       })
-      throw new Error(`Container returned status ${response.status}: ${errorText}`)
+      throw new Error(`Sandbox creation failed with status ${createResponse.status}: ${errorText}`)
     }
 
-    // Parse container response
-    const containerResponse: ContainerResponse = await response.json()
+    const createResult = await createResponse.json()
 
-    logWithContext('CLAUDE_ROUTING', 'Container response parsed', {
-      success: containerResponse.success,
-      message: containerResponse.message,
-      hasError: !!containerResponse.error
+    if (!createResult.success) {
+      logWithContext('CLAUDE_ROUTING', 'Sandbox creation unsuccessful', {
+        error: createResult.error
+      })
+      throw new Error(`Sandbox creation failed: ${createResult.error}`)
+    }
+
+    const sandboxId = createResult.sandboxId
+
+    logWithContext('CLAUDE_ROUTING', 'Sandbox created successfully', {
+      sandboxId,
+      sandboxName
     })
 
-    if (containerResponse.success) {
-      logWithContext('CLAUDE_ROUTING', 'Container processing completed successfully', {
-        message: containerResponse.message
+    // Step 2: Execute Claude Code CLI in the sandbox to process the issue
+    const processCommand = `cd /workspace && /root/.local/bin/claude -p "
+You are working on GitHub issue #${issue.number}: \\"${issue.title}\\"
+
+Issue Description:
+${issue.body || 'No description provided'}
+
+Labels: ${issue.labels?.map((label: any) => label.name).join(', ') || 'None'}
+Author: ${issue.user.login}
+
+The repository has been cloned to your current working directory. Please:
+1. Explore the codebase to understand the structure and relevant files
+2. Analyze the issue requirements thoroughly
+3. Implement a solution that addresses the issue
+4. Write appropriate tests if needed
+5. Ensure code quality and consistency with existing patterns
+
+**IMPORTANT: If you make any file changes, please create a file called '.claude-pr-summary.md' in the root directory with a concise summary (1-3 sentences) of what changes you made and why. This will be used for the pull request description.**
+
+Work step by step and provide clear explanations of your approach.
+" --output-format json --permission-mode bypassPermissions --allowedTools Bash,Read,Edit,Write,Grep,Glob`
+
+    const executeResponse = await sandboxManager.fetch(new Request('http://internal/execute', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        sandboxId,
+        command: processCommand,
+        workingDirectory: '/workspace',
+        envVars: issueEnvVars
+      })
+    }))
+
+    logWithContext('CLAUDE_ROUTING', 'Command execution response', {
+      status: executeResponse.status,
+      statusText: executeResponse.statusText
+    })
+
+    if (!executeResponse.ok) {
+      const errorText = await executeResponse.text().catch(() => 'Unable to read execution error')
+      logWithContext('CLAUDE_ROUTING', 'Command execution failed', {
+        status: executeResponse.status,
+        errorText
+      })
+      throw new Error(`Command execution failed with status ${executeResponse.status}: ${errorText}`)
+    }
+
+    const executeResult = await executeResponse.json()
+
+    logWithContext('CLAUDE_ROUTING', 'Command execution completed', {
+      success: executeResult.success,
+      exitCode: executeResult.data?.exitCode,
+      stdoutLength: executeResult.data?.stdout?.length || 0,
+      stderrLength: executeResult.data?.stderr?.length || 0
+    })
+
+    if (executeResult.success && executeResult.data?.exitCode === 0) {
+      logWithContext('CLAUDE_ROUTING', 'Sandbox processing completed successfully', {
+        stdout: executeResult.data.stdout?.substring(0, 200) + '...'
       })
     } else {
-      logWithContext('CLAUDE_ROUTING', 'Container processing failed', {
-        error: containerResponse.error
+      logWithContext('CLAUDE_ROUTING', 'Sandbox processing had issues', {
+        exitCode: executeResult.data?.exitCode,
+        stderr: executeResult.data?.stderr
       })
     }
 
   } catch (error) {
-    logWithContext('CLAUDE_ROUTING', 'Failed to process Claude Code response', {
+    logWithContext('CLAUDE_ROUTING', 'Failed to process with Daytona sandbox', {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined
     })
@@ -188,11 +257,11 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
       // TODO: Implement GitHub comment posting with KV credentials
       logWithContext('ISSUES_EVENT', 'Skipping initial acknowledgment comment (needs GitHub API update for KV)')
 
-      // Route to Claude Code container for processing
-      logWithContext('ISSUES_EVENT', 'Routing to Claude Code container')
-      await routeToClaudeCodeContainer(issue, repository, env, data)
+      // Route to Claude Code sandbox for processing
+      logWithContext('ISSUES_EVENT', 'Routing to Claude Code sandbox')
+      await routeToClaudeCodeSandbox(issue, repository, env, data)
 
-      logWithContext('ISSUES_EVENT', 'Issue routed to Claude Code container successfully')
+      logWithContext('ISSUES_EVENT', 'Issue routed to Claude Code sandbox successfully')
 
     } catch (error) {
       logWithContext('ISSUES_EVENT', 'Failed to process new issue', {
@@ -231,10 +300,10 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
       })
 
       try {
-        // Route updated issue to Claude Code container for re-analysis
-        await routeToClaudeCodeContainer(issue, repository, env, data)
+        // Route updated issue to Claude Code sandbox for re-analysis
+        await routeToClaudeCodeSandbox(issue, repository, env, data)
 
-        logWithContext('ISSUES_EVENT', 'Updated issue routed to Claude Code container successfully')
+        logWithContext('ISSUES_EVENT', 'Updated issue routed to Claude Code sandbox successfully')
 
       } catch (error) {
         logWithContext('ISSUES_EVENT', 'Failed to process issue update', {
@@ -251,29 +320,10 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
     }
   }
 
-  // For other issue actions, use the standard container routing
-  const containerName = `repo-${repository.id}`
-  const id = env.MY_CONTAINER.idFromName(containerName)
-  const container = env.MY_CONTAINER.get(id)
-
-  const webhookPayload = {
-    event: 'issues',
+  // For other issue actions, just acknowledge the event
+  logWithContext('ISSUES_EVENT', 'Issue action acknowledged', {
     action,
-    repository: repository.full_name,
-    issue_number: issue.number,
-    issue_title: issue.title,
-    issue_author: issue.user.login
-  }
-
-  await containerFetch(container, new Request('http://internal/webhook', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(webhookPayload)
-  }), {
-    containerName,
-    route: '/webhook'
+    issueNumber: issue.number
   })
 
   return new Response('Issues event processed', {status: 200})
