@@ -1,7 +1,3 @@
-# Local build artifacts
-container_src/node_modules/
-container_src/dist/
-container_src/.npm
 
 # OS generated files
 .DS_Store

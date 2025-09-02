@@ -3,7 +3,9 @@
 import { Daytona, Image } from '@daytonaio/sdk';
 import { readFileSync } from 'fs';
 
-const CLAUDE_SNAPSHOT_NAME = "claude-code-env:1.0.0";
+// Generate unique snapshot name with timestamp  
+const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+const CLAUDE_SNAPSHOT_NAME = `claude-code-env-1`;
 const DOCKERFILE_PATH = "Dockerfile.slim";
 
 async function createSnapshot() {
@@ -30,6 +32,8 @@ async function createSnapshot() {
     const daytona = new Daytona({ apiKey: daytonaApiKey });
 
     console.log(`📦 Creating Claude Code snapshot from ${DOCKERFILE_PATH}...`);
+    
+    // Try specifying the build context more explicitly
     const claudeImage = Image.fromDockerfile(DOCKERFILE_PATH);
 
     await daytona.snapshot.create({

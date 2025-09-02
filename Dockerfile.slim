@@ -1,43 +1,31 @@
 # syntax=docker/dockerfile:1
 
-# Multi-stage build for slim container optimized for Daytona
-FROM node:22-alpine AS base
+# Single-stage build for slim container optimized for Daytona
+FROM node:22.17.0
 
-# Install only essential system dependencies
-RUN apk add --no-cache \
-    python3 \
-    py3-pip \
+# Install git and curl (other dependencies come with full Node.js image)
+RUN apt-get update && apt-get install -y \
     git \
     curl \
-    ca-certificates \
-    && rm -rf /var/cache/apk/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code CLI using official installer
-RUN curl -fsSL https://claude.ai/install.sh | sh
-
-# Add Claude to PATH
-ENV PATH="/root/.local/bin:$PATH"
+# Install Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files for better caching
-COPY container_src/package*.json ./
 
-# Install npm dependencies with clean cache
-RUN npm ci --only=production && npm cache clean --force
 
-# Copy TypeScript configuration
-COPY container_src/tsconfig.json ./
+# Copy entire container_src directory
+COPY container_src/ ./
 
-# Copy source code
-COPY container_src/src/ ./src/
+# Install dependencies
+RUN npm ci && npm cache clean --force
 
 # Build TypeScript
 RUN npm run build
-
-# Remove dev dependencies and source files to reduce size
-RUN rm -rf src/ tsconfig.json node_modules/.cache/
 
 # Optimize for Daytona deployment
 EXPOSE 8080
@@ -47,7 +35,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
 # Use non-root user for security
-RUN addgroup -g 1001 -S nodejs && adduser -S claude -u 1001 -G nodejs
+RUN groupadd --gid 1001 nodejs && useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash claude
 USER claude
 
 # Run the compiled JavaScript

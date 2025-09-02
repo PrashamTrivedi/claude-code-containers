@@ -57,7 +57,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * Initialize Daytona client with credentials from KV storage
+   * Initialize Daytona SDK client with credentials from KV storage
    */
   private async initializeDaytonaClient(): Promise<void> {
     if (this.daytonaClient) {
@@ -74,11 +74,11 @@ export class DaytonaSandboxManagerDO extends DurableObject {
 
       this.daytonaClient = new DaytonaClient(credentials.apiKey, credentials.apiUrl)
       
-      logWithContext('SANDBOX_MANAGER_DO', 'Daytona client initialized', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Daytona SDK client initialized', {
         apiUrl: credentials.apiUrl
       })
     } catch (error) {
-      logWithContext('SANDBOX_MANAGER_DO', 'Failed to initialize Daytona client', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Failed to initialize Daytona SDK client', {
         error: (error as Error).message
       })
       throw error
@@ -135,7 +135,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
     })
 
     try {
-      // Initialize Daytona client if not already done
+      // Initialize Daytona SDK client if not already done
       await this.initializeDaytonaClient()
       switch (pathname) {
         case '/create':
@@ -213,7 +213,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       this.sandboxes.set(sandbox.id, sandboxState)
       await this.saveSandboxState()
 
-      // Wait for sandbox to be running (with timeout)
+      // Wait for sandbox to be running using SDK's waitUntilStarted
       try {
         const runningSandbox = await this.daytonaClient!.waitForSandboxStatus(
           sandbox.id,
@@ -228,6 +228,11 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         this.sandboxes.set(sandbox.id, sandboxState)
         await this.saveSandboxState()
 
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox successfully started via SDK', {
+          sandboxId: sandbox.id,
+          status: runningSandbox.status
+        })
+
         return Response.json({
           success: true,
           data: runningSandbox,
@@ -235,7 +240,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         } as SandboxManagerResponse<DaytonaSandbox>)
 
       } catch (startupError) {
-        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox startup timeout or error', {
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox startup timeout or error via SDK', {
           sandboxId: sandbox.id,
           error: (startupError as Error).message
         })
@@ -260,12 +265,12 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * Execute command in sandbox
+   * Execute command in sandbox via SDK
    */
   private async handleExecuteCommand(request: Request): Promise<Response> {
     const executeRequest: ExecuteCommandDORequest = await request.json()
     
-    logWithContext('SANDBOX_MANAGER_DO', 'Executing command in sandbox', {
+    logWithContext('SANDBOX_MANAGER_DO', 'Executing command in sandbox via SDK', {
       sandboxId: executeRequest.sandboxId,
       command: executeRequest.command.substring(0, 100)
     })
@@ -280,6 +285,12 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         }
       )
 
+      logWithContext('SANDBOX_MANAGER_DO', 'Command executed successfully via SDK', {
+        sandboxId: executeRequest.sandboxId,
+        exitCode: response.exitCode,
+        outputLength: response.stdout.length + response.stderr.length
+      })
+
       return Response.json({
         success: true,
         data: response,
@@ -287,7 +298,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       } as SandboxManagerResponse)
 
     } catch (error) {
-      logWithContext('SANDBOX_MANAGER_DO', 'Error executing command', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error executing command via SDK', {
         sandboxId: executeRequest.sandboxId,
         error: (error as Error).message
       })
@@ -301,7 +312,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * Get sandbox information
+   * Get sandbox information via SDK
    */
   private async handleGetSandbox(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -313,6 +324,8 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         error: 'sandboxId parameter required'
       } as SandboxManagerResponse, { status: 400 })
     }
+
+    logWithContext('SANDBOX_MANAGER_DO', 'Getting sandbox info via SDK', { sandboxId })
 
     try {
       const sandbox = await this.daytonaClient!.getSandbox(sandboxId)
@@ -326,6 +339,11 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         await this.saveSandboxState()
       }
 
+      logWithContext('SANDBOX_MANAGER_DO', 'Retrieved sandbox info successfully via SDK', {
+        sandboxId,
+        status: sandbox.status
+      })
+
       return Response.json({
         success: true,
         data: sandbox,
@@ -333,6 +351,11 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       } as SandboxManagerResponse<DaytonaSandbox>)
 
     } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error getting sandbox info via SDK', {
+        sandboxId,
+        error: (error as Error).message
+      })
+
       return Response.json({
         success: false,
         error: (error as Error).message,
@@ -342,11 +365,18 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * List all sandboxes
+   * List all sandboxes via SDK
    */
   private async handleListSandboxes(_request: Request): Promise<Response> {
+    logWithContext('SANDBOX_MANAGER_DO', 'Listing sandboxes via SDK')
+
     try {
       const sandboxes = await this.daytonaClient!.listSandboxes()
+      
+      logWithContext('SANDBOX_MANAGER_DO', 'Listed sandboxes successfully via SDK', {
+        count: sandboxes.length,
+        storedCount: this.sandboxes.size
+      })
       
       return Response.json({
         success: true,
@@ -357,6 +387,10 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       } as SandboxManagerResponse)
 
     } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error listing sandboxes via SDK', {
+        error: (error as Error).message
+      })
+
       return Response.json({
         success: false,
         error: (error as Error).message
@@ -365,13 +399,13 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * Cleanup old/unused sandboxes
+   * Cleanup old/unused sandboxes via SDK
    */
   private async handleCleanupSandboxes(request: Request): Promise<Response> {
     const url = new URL(request.url)
     const maxAgeHours = parseInt(url.searchParams.get('maxAgeHours') || '24')
     
-    logWithContext('SANDBOX_MANAGER_DO', 'Starting sandbox cleanup', { maxAgeHours })
+    logWithContext('SANDBOX_MANAGER_DO', 'Starting sandbox cleanup via SDK', { maxAgeHours })
 
     try {
       const cutoffTime = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000)
@@ -389,14 +423,14 @@ export class DaytonaSandboxManagerDO extends DurableObject {
             this.sandboxes.delete(sandbox.id)
             cleaned++
             
-            logWithContext('SANDBOX_MANAGER_DO', 'Cleaned up old sandbox', {
+            logWithContext('SANDBOX_MANAGER_DO', 'Cleaned up old sandbox via SDK', {
               sandboxId: sandbox.id,
               created: sandbox.created
             })
           } catch (error) {
             const errorMsg = `Failed to cleanup sandbox ${sandbox.id}: ${(error as Error).message}`
             errors.push(errorMsg)
-            logWithContext('SANDBOX_MANAGER_DO', 'Error cleaning sandbox', {
+            logWithContext('SANDBOX_MANAGER_DO', 'Error cleaning sandbox via SDK', {
               sandboxId: sandbox.id,
               error: (error as Error).message
             })
@@ -405,6 +439,12 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       }
 
       await this.saveSandboxState()
+
+      logWithContext('SANDBOX_MANAGER_DO', 'Sandbox cleanup completed via SDK', {
+        cleaned,
+        errors: errors.length,
+        remaining: sandboxes.length - cleaned
+      })
 
       return Response.json({
         success: true,
@@ -416,6 +456,10 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       } as SandboxManagerResponse)
 
     } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error during sandbox cleanup via SDK', {
+        error: (error as Error).message
+      })
+
       return Response.json({
         success: false,
         error: (error as Error).message
@@ -424,22 +468,34 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * Health check
+   * Health check via SDK
    */
   private async handleHealthCheck(_request: Request): Promise<Response> {
+    logWithContext('SANDBOX_MANAGER_DO', 'Performing health check via SDK')
+
     try {
       const isHealthy = await this.daytonaClient!.healthCheck()
+      
+      logWithContext('SANDBOX_MANAGER_DO', 'Health check completed via SDK', {
+        isHealthy,
+        storedSandboxes: this.sandboxes.size
+      })
       
       return Response.json({
         success: isHealthy,
         data: {
           daytonaConnected: isHealthy,
           storedSandboxes: this.sandboxes.size,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          sdkVersion: '@daytonaio/sdk v0.25.6'
         }
       } as SandboxManagerResponse)
 
     } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error during health check via SDK', {
+        error: (error as Error).message
+      })
+
       return Response.json({
         success: false,
         error: (error as Error).message

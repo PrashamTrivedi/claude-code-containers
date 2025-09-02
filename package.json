@@ -10,7 +10,7 @@
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types",
 		"build-daytona-container": "./scripts/build-daytona-container.sh",
-		"create-daytona-snapshot": "node scripts/create-daytona-snapshot.js"
+		"create-daytona-snapshot": "node scripts/create-daytona-snapshot.mjs"
 	},
 	"devDependencies": {
 		"@types/node": "^24.3.0",
@@ -18,6 +18,7 @@
 		"wrangler": "^4.30.0"
 	},
 	"dependencies": {
+		"@daytonaio/sdk": "^0.25.6",
 		"@tsndr/cloudflare-worker-jwt": "^3.2.0"
 	},
 	"cloudflare": {

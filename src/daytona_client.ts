@@ -1,6 +1,7 @@
+import { Daytona } from '@daytonaio/sdk'
 import { logWithContext } from './log'
 
-// Daytona API interfaces
+// Daytona SDK interfaces (aligned with SDK types)
 export interface DaytonaSandbox {
   id: string
   name: string
@@ -41,168 +42,204 @@ export interface DaytonaApiError {
 }
 
 /**
- * Daytona API client for managing sandboxes
+ * Daytona SDK client wrapper for managing sandboxes
  */
 export class DaytonaClient {
-  private apiKey: string
-  private baseUrl: string
+  private daytona: Daytona
+  private apiUrl: string
 
-  constructor(apiKey: string, baseUrl: string = 'https://api.daytona.io') {
-    this.apiKey = apiKey
-    this.baseUrl = baseUrl.replace(/\/$/, '') // Remove trailing slash
+  constructor(apiKey: string, apiUrl: string = 'https://api.daytona.io') {
+    this.apiUrl = apiUrl.replace(/\/$/, '') // Remove trailing slash
+    this.daytona = new Daytona({ 
+      apiKey,
+      apiUrl: this.apiUrl
+    })
+    
+    logWithContext('DAYTONA_CLIENT', 'SDK client initialized', {
+      apiUrl: this.apiUrl
+    })
   }
 
-  /**
-   * Make authenticated request to Daytona API
-   */
-  private async makeRequest<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
-    const url = `${this.baseUrl}${endpoint}`
-    
-    logWithContext('DAYTONA_CLIENT', 'Making API request', {
-      method: options.method || 'GET',
-      endpoint,
-      hasBody: !!options.body
-    })
-
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-    })
-
-    const responseText = await response.text()
-    
-    logWithContext('DAYTONA_CLIENT', 'API response received', {
-      status: response.status,
-      statusText: response.statusText,
-      responseLength: responseText.length
-    })
-
-    if (!response.ok) {
-      let errorData: DaytonaApiError
-      try {
-        errorData = JSON.parse(responseText)
-      } catch {
-        errorData = {
-          error: 'Unknown error',
-          message: responseText || response.statusText,
-          status: response.status
-        }
-      }
-
-      logWithContext('DAYTONA_CLIENT', 'API error response', {
-        status: response.status,
-        error: errorData.error,
-        message: errorData.message
-      })
-
-      throw new Error(`Daytona API Error (${response.status}): ${errorData.message || errorData.error}`)
-    }
-
-    if (!responseText) {
-      return {} as T
-    }
-
-    try {
-      return JSON.parse(responseText)
-    } catch (error) {
-      logWithContext('DAYTONA_CLIENT', 'Error parsing JSON response', {
-        error: (error as Error).message,
-        responseText: responseText.substring(0, 200)
-      })
-      throw new Error('Invalid JSON response from Daytona API')
-    }
-  }
 
   /**
    * Create a new sandbox
    */
   async createSandbox(request: CreateSandboxRequest): Promise<DaytonaSandbox> {
-    logWithContext('DAYTONA_CLIENT', 'Creating sandbox', {
+    logWithContext('DAYTONA_CLIENT', 'Creating sandbox via SDK', {
       name: request.name,
       projectName: request.projectName,
       gitUrl: request.gitUrl,
       hasEnvVars: !!request.envVars && Object.keys(request.envVars).length > 0
     })
 
-    const sandbox = await this.makeRequest<DaytonaSandbox>('/v1/sandboxes', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: request.name,
-        workspace_id: request.workspaceId,
-        project_name: request.projectName,
-        git_url: request.gitUrl,
+    try {
+      const sandbox = await this.daytona.create({
         image: request.image || 'claude-code-container',
-        env_vars: request.envVars || {}
+        envVars: request.envVars || {},
+        labels: {
+          projectName: request.projectName,
+          gitUrl: request.gitUrl,
+          name: request.name
+        }
       })
-    })
 
-    logWithContext('DAYTONA_CLIENT', 'Sandbox created successfully', {
-      sandboxId: sandbox.id,
-      status: sandbox.status
-    })
+      logWithContext('DAYTONA_CLIENT', 'Sandbox created successfully via SDK', {
+        sandboxId: sandbox.id,
+        state: sandbox.state
+      })
 
-    return sandbox
+      // Transform SDK response to our interface
+      return {
+        id: sandbox.id,
+        name: sandbox.labels?.name || request.name,
+        status: this.mapSandboxState(sandbox.state),
+        workspaceId: sandbox.organizationId || '',
+        projectName: request.projectName,
+        gitUrl: request.gitUrl,
+        created: sandbox.createdAt || new Date().toISOString(),
+        updated: sandbox.updatedAt || new Date().toISOString()
+      }
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error creating sandbox via SDK', {
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to create sandbox: ${(error as Error).message}`)
+    }
   }
 
   /**
    * Get sandbox by ID
    */
   async getSandbox(sandboxId: string): Promise<DaytonaSandbox> {
-    logWithContext('DAYTONA_CLIENT', 'Getting sandbox', { sandboxId })
+    logWithContext('DAYTONA_CLIENT', 'Getting sandbox via SDK', { sandboxId })
     
-    return this.makeRequest<DaytonaSandbox>(`/v1/sandboxes/${sandboxId}`)
+    try {
+      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      
+      return {
+        id: sandbox.id,
+        name: sandbox.labels?.name || sandbox.id,
+        status: this.mapSandboxState(sandbox.state),
+        workspaceId: sandbox.organizationId || '',
+        projectName: sandbox.labels?.projectName || sandbox.id,
+        gitUrl: sandbox.labels?.gitUrl,
+        created: sandbox.createdAt || new Date().toISOString(),
+        updated: sandbox.updatedAt || new Date().toISOString()
+      }
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error getting sandbox via SDK', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to get sandbox: ${(error as Error).message}`)
+    }
   }
 
   /**
    * List all sandboxes
    */
   async listSandboxes(workspaceId?: string): Promise<DaytonaSandbox[]> {
-    logWithContext('DAYTONA_CLIENT', 'Listing sandboxes', { workspaceId })
+    logWithContext('DAYTONA_CLIENT', 'Listing sandboxes via SDK', { workspaceId })
     
-    const query = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
-    return this.makeRequest<DaytonaSandbox[]>(`/v1/sandboxes${query}`)
+    try {
+      const sandboxes = await this.daytona.list()
+      
+      return sandboxes
+        .filter(sandbox => !workspaceId || sandbox.organizationId === workspaceId)
+        .map(sandbox => ({
+          id: sandbox.id,
+          name: sandbox.labels?.name || sandbox.id,
+          status: this.mapSandboxState(sandbox.state),
+          workspaceId: sandbox.organizationId || '',
+          projectName: sandbox.labels?.projectName || sandbox.id,
+          gitUrl: sandbox.labels?.gitUrl,
+          created: sandbox.createdAt || new Date().toISOString(),
+          updated: sandbox.updatedAt || new Date().toISOString()
+        }))
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error listing sandboxes via SDK', {
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to list sandboxes: ${(error as Error).message}`)
+    }
   }
 
   /**
    * Start a sandbox
    */
   async startSandbox(sandboxId: string): Promise<DaytonaSandbox> {
-    logWithContext('DAYTONA_CLIENT', 'Starting sandbox', { sandboxId })
+    logWithContext('DAYTONA_CLIENT', 'Starting sandbox via SDK', { sandboxId })
     
-    return this.makeRequest<DaytonaSandbox>(`/v1/sandboxes/${sandboxId}/start`, {
-      method: 'POST'
-    })
+    try {
+      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      await sandbox.start()
+      
+      return {
+        id: sandbox.id,
+        name: sandbox.labels?.name || sandbox.id,
+        status: this.mapSandboxState(sandbox.state),
+        workspaceId: sandbox.organizationId || '',
+        projectName: sandbox.labels?.projectName || sandbox.id,
+        gitUrl: sandbox.labels?.gitUrl,
+        created: sandbox.createdAt || new Date().toISOString(),
+        updated: sandbox.updatedAt || new Date().toISOString()
+      }
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error starting sandbox via SDK', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to start sandbox: ${(error as Error).message}`)
+    }
   }
 
   /**
    * Stop a sandbox
    */
   async stopSandbox(sandboxId: string): Promise<DaytonaSandbox> {
-    logWithContext('DAYTONA_CLIENT', 'Stopping sandbox', { sandboxId })
+    logWithContext('DAYTONA_CLIENT', 'Stopping sandbox via SDK', { sandboxId })
     
-    return this.makeRequest<DaytonaSandbox>(`/v1/sandboxes/${sandboxId}/stop`, {
-      method: 'POST'
-    })
+    try {
+      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      await sandbox.stop()
+      
+      return {
+        id: sandbox.id,
+        name: sandbox.labels?.name || sandbox.id,
+        status: this.mapSandboxState(sandbox.state),
+        workspaceId: sandbox.organizationId || '',
+        projectName: sandbox.labels?.projectName || sandbox.id,
+        gitUrl: sandbox.labels?.gitUrl,
+        created: sandbox.createdAt || new Date().toISOString(),
+        updated: sandbox.updatedAt || new Date().toISOString()
+      }
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error stopping sandbox via SDK', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to stop sandbox: ${(error as Error).message}`)
+    }
   }
 
   /**
    * Delete a sandbox
    */
   async deleteSandbox(sandboxId: string): Promise<void> {
-    logWithContext('DAYTONA_CLIENT', 'Deleting sandbox', { sandboxId })
+    logWithContext('DAYTONA_CLIENT', 'Deleting sandbox via SDK', { sandboxId })
     
-    await this.makeRequest<void>(`/v1/sandboxes/${sandboxId}`, {
-      method: 'DELETE'
-    })
-
-    logWithContext('DAYTONA_CLIENT', 'Sandbox deleted successfully', { sandboxId })
+    try {
+      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      await sandbox.delete()
+      
+      logWithContext('DAYTONA_CLIENT', 'Sandbox deleted successfully via SDK', { sandboxId })
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error deleting sandbox via SDK', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to delete sandbox: ${(error as Error).message}`)
+    }
   }
 
   /**
@@ -212,7 +249,7 @@ export class DaytonaClient {
     sandboxId: string,
     request: ExecuteCommandRequest
   ): Promise<ExecuteCommandResponse> {
-    logWithContext('DAYTONA_CLIENT', 'Executing command in sandbox', {
+    logWithContext('DAYTONA_CLIENT', 'Executing command in sandbox via SDK', {
       sandboxId,
       command: request.command.substring(0, 100),
       workingDirectory: request.workingDirectory,
@@ -221,30 +258,39 @@ export class DaytonaClient {
 
     const startTime = Date.now()
     
-    const response = await this.makeRequest<ExecuteCommandResponse>(
-      `/v1/sandboxes/${sandboxId}/exec`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          command: request.command,
-          working_directory: request.workingDirectory || '/workspace',
-          env_vars: request.envVars || {}
-        })
+    try {
+      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      const result = await sandbox.process.executeCommand(
+        request.command,
+        request.workingDirectory || undefined,
+        request.envVars || undefined
+      )
+
+      const actualDuration = Date.now() - startTime
+
+      const response: ExecuteCommandResponse = {
+        exitCode: result.exitCode || 0,
+        stdout: result.artifacts?.stdout || result.result || '',
+        stderr: result.artifacts?.stderr || '', // Check for separate stderr
+        duration: actualDuration
       }
-    )
 
-    const actualDuration = Date.now() - startTime
+      logWithContext('DAYTONA_CLIENT', 'Command execution completed via SDK', {
+        sandboxId,
+        exitCode: response.exitCode,
+        stdoutLength: response.stdout.length,
+        stderrLength: response.stderr.length,
+        duration: response.duration
+      })
 
-    logWithContext('DAYTONA_CLIENT', 'Command execution completed', {
-      sandboxId,
-      exitCode: response.exitCode,
-      stdoutLength: response.stdout.length,
-      stderrLength: response.stderr.length,
-      reportedDuration: response.duration,
-      actualDuration
-    })
-
-    return response
+      return response
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error executing command via SDK', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to execute command: ${(error as Error).message}`)
+    }
   }
 
   /**
@@ -256,58 +302,96 @@ export class DaytonaClient {
     timeoutMs: number = 120000, // 2 minutes default
     pollIntervalMs: number = 2000 // 2 seconds default
   ): Promise<DaytonaSandbox> {
-    logWithContext('DAYTONA_CLIENT', 'Waiting for sandbox status', {
+    logWithContext('DAYTONA_CLIENT', 'Waiting for sandbox status via SDK', {
       sandboxId,
       targetStatus,
       timeoutMs,
       pollIntervalMs
     })
 
-    const startTime = Date.now()
-    
-    while (Date.now() - startTime < timeoutMs) {
-      const sandbox = await this.getSandbox(sandboxId)
+    try {
+      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      const timeoutSeconds = Math.floor(timeoutMs / 1000)
       
-      if (sandbox.status === targetStatus) {
-        logWithContext('DAYTONA_CLIENT', 'Sandbox reached target status', {
-          sandboxId,
-          status: sandbox.status,
-          elapsedMs: Date.now() - startTime
-        })
-        return sandbox
-      }
+      if (targetStatus === 'running') {
+        await sandbox.waitUntilStarted(timeoutSeconds)
+      } else if (targetStatus === 'stopped') {
+        await sandbox.waitUntilStopped(timeoutSeconds)
+      } else {
+        // Fallback to polling for other statuses
+        const startTime = Date.now()
+        
+        while (Date.now() - startTime < timeoutMs) {
+          const currentSandbox = await this.getSandbox(sandboxId)
+          
+          if (currentSandbox.status === targetStatus) {
+            logWithContext('DAYTONA_CLIENT', 'Sandbox reached target status via SDK', {
+              sandboxId,
+              status: currentSandbox.status,
+              elapsedMs: Date.now() - startTime
+            })
+            return currentSandbox
+          }
 
-      if (sandbox.status === 'failed') {
-        throw new Error(`Sandbox ${sandboxId} failed to reach status ${targetStatus}`)
-      }
+          if (currentSandbox.status === 'failed') {
+            throw new Error(`Sandbox ${sandboxId} failed to reach status ${targetStatus}`)
+          }
 
-      logWithContext('DAYTONA_CLIENT', 'Sandbox status check', {
+          await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+        }
+
+        throw new Error(`Timeout waiting for sandbox ${sandboxId} to reach status ${targetStatus}`)
+      }
+      
+      // Return updated sandbox info
+      return await this.getSandbox(sandboxId)
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error waiting for sandbox status via SDK', {
         sandboxId,
-        currentStatus: sandbox.status,
         targetStatus,
-        elapsedMs: Date.now() - startTime
+        error: (error as Error).message
       })
-
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+      throw new Error(`Failed to wait for sandbox status: ${(error as Error).message}`)
     }
-
-    throw new Error(`Timeout waiting for sandbox ${sandboxId} to reach status ${targetStatus}`)
   }
 
   /**
-   * Health check - verify API connectivity
+   * Map SDK SandboxState to our DaytonaSandbox status
+   */
+  private mapSandboxState(state?: any): DaytonaSandbox['status'] {
+    if (!state) return 'creating'
+    
+    // Map SDK states to our interface states
+    switch (state) {
+      case 'STARTED':
+        return 'running'
+      case 'STOPPED':
+        return 'stopped'
+      case 'STARTING':
+        return 'creating'
+      case 'STOPPING':
+        return 'stopping'
+      case 'ERROR':
+        return 'failed'
+      default:
+        return 'creating'
+    }
+  }
+
+  /**
+   * Health check - verify SDK connectivity
    */
   async healthCheck(): Promise<boolean> {
     try {
-      logWithContext('DAYTONA_CLIENT', 'Performing health check')
+      logWithContext('DAYTONA_CLIENT', 'Performing health check via SDK')
       
       // Try to list sandboxes as a simple connectivity test
       await this.listSandboxes()
       
-      logWithContext('DAYTONA_CLIENT', 'Health check passed')
+      logWithContext('DAYTONA_CLIENT', 'Health check passed via SDK')
       return true
     } catch (error) {
-      logWithContext('DAYTONA_CLIENT', 'Health check failed', {
+      logWithContext('DAYTONA_CLIENT', 'Health check failed via SDK', {
         error: (error as Error).message
       })
       return false

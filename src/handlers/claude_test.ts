@@ -1,7 +1,6 @@
 import { logWithContext } from "../log";
 import { getClaudeApiKey } from "../kv_storage";
-import { containerFetch } from "../fetch";
-import { loadBalance } from '@cloudflare/containers';
+// import { containerFetch } from "../fetch"; // Temporarily commented out for Daytona SDK migration
 
 export async function handleClaudeTest(request: Request, env?: any): Promise<Response> {
   logWithContext('CLAUDE_TEST', 'Handling Claude test request', {
@@ -85,9 +84,9 @@ export async function handleClaudeTest(request: Request, env?: any): Promise<Res
     };
 
     try {
-      // Use load balanced container for the test
+      // Use container for the test
       logWithContext('CLAUDE_TEST', 'Creating container for Claude test');
-      const container = await loadBalance(env.MY_CONTAINER, 3);
+      const container = env.MY_CONTAINER.get(env.MY_CONTAINER.idFromName('claude-test'));
 
       // Make request to container
       const containerRequest = new Request('http://internal/test-claude', {
@@ -97,10 +96,12 @@ export async function handleClaudeTest(request: Request, env?: any): Promise<Res
       });
 
       logWithContext('CLAUDE_TEST', 'Sending request to container');
-      const containerResponse = await containerFetch(container, containerRequest, {
-        containerName: 'claude-test',
-        route: '/test-claude'
-      });
+      // Temporarily use direct fetch during SDK migration
+      const containerResponse = await container.fetch(containerRequest);
+      // const containerResponse = await containerFetch(container, containerRequest, {
+      //   containerName: 'claude-test',
+      //   route: '/test-claude'
+      // });
 
       const responseText = await containerResponse.text();
       logWithContext('CLAUDE_TEST', 'Container response received', {
