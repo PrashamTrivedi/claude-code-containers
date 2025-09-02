@@ -430,8 +430,8 @@ export class DaytonaClient {
       promptLength: prompt.length
     })
 
-    // Base64 encode the prompt  
-    const messageBase64 = btoa(prompt)
+    // Base64 encode the prompt using modern Web API
+    const messageBase64 = btoa(new TextEncoder().encode(prompt).reduce((data, byte) => data + String.fromCharCode(byte), ''))
 
     // Execute Claude CLI with the exact required format
     const claudeCommand = `claude -c "cd /workspace && claude --dangerously-skip-permissions -p \"$(echo '${messageBase64}' | base64 -d)\" --continue --output-format json"`

@@ -63,9 +63,9 @@ export class GitHubAPI {
     return response.json();
   }
 
-  // Branch Operations
-  async createBranch(owner: string, repo: string, branchName: string, baseSha: string): Promise<void> {
-    logWithContext('GITHUB_API', 'Creating branch', { owner, repo, branchName, baseSha });
+  // Branch Operations (legacy method - kept for backward compatibility)
+  async createBranchWithSha(owner: string, repo: string, branchName: string, baseSha: string): Promise<void> {
+    logWithContext('GITHUB_API', 'Creating branch with SHA', { owner, repo, branchName, baseSha });
     
     const response = await this.makeAuthenticatedRequest(`/repos/${owner}/${repo}/git/refs`, {
       method: 'POST',
@@ -77,7 +77,7 @@ export class GitHubAPI {
 
     if (!response.ok) {
       const error = await response.text();
-      logWithContext('GITHUB_API', 'Failed to create branch', { status: response.status, error });
+      logWithContext('GITHUB_API', 'Failed to create branch with SHA', { status: response.status, error });
       throw new Error(`Failed to create branch: ${response.status} ${error}`);
     }
   }
@@ -171,28 +171,43 @@ export class GitHubAPI {
     };
   }
 
-  // Enhanced branch operations for Worker-based PR creation
+  // Create branch from base branch (primary method for Worker-based operations)
   async createBranch(owner: string, repo: string, branchName: string, baseBranch: string = 'main'): Promise<void> {
     logWithContext('GITHUB_API', 'Creating branch from Worker', { owner, repo, branchName, baseBranch });
     
-    // First get the SHA of the base branch
-    const baseSha = await this.getDefaultBranchSha(owner, repo);
-    
-    const response = await this.makeAuthenticatedRequest(`/repos/${owner}/${repo}/git/refs`, {
-      method: 'POST',
-      body: JSON.stringify({
-        ref: `refs/heads/${branchName}`,
-        sha: baseSha
-      })
-    });
+    try {
+      // First get the SHA of the base branch
+      const baseSha = await this.getDefaultBranchSha(owner, repo);
+      
+      const response = await this.makeAuthenticatedRequest(`/repos/${owner}/${repo}/git/refs`, {
+        method: 'POST',
+        body: JSON.stringify({
+          ref: `refs/heads/${branchName}`,
+          sha: baseSha
+        })
+      });
 
-    if (!response.ok) {
-      const error = await response.text();
-      logWithContext('GITHUB_API', 'Failed to create branch from Worker', { status: response.status, error });
-      throw new Error(`Failed to create branch: ${response.status} ${error}`);
+      if (!response.ok) {
+        const error = await response.text();
+        
+        // Handle case where branch already exists
+        if (response.status === 422) {
+          logWithContext('GITHUB_API', 'Branch already exists, continuing', { branchName });
+          return; // Branch exists, continue
+        }
+        
+        logWithContext('GITHUB_API', 'Failed to create branch from Worker', { status: response.status, error });
+        throw new Error(`Failed to create branch: ${response.status} ${error}`);
+      }
+
+      logWithContext('GITHUB_API', 'Branch created successfully from Worker', { branchName });
+    } catch (error) {
+      logWithContext('GITHUB_API', 'Error in createBranch', {
+        error: (error as Error).message,
+        branchName
+      });
+      throw error;
     }
-
-    logWithContext('GITHUB_API', 'Branch created successfully from Worker', { branchName });
   }
 
   // Create pull request directly from Worker

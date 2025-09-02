@@ -280,7 +280,17 @@ Co-Authored-By: Claude <noreply@anthropic.com>`
         commitMessage: commitMessage.substring(0, 100) + '...'
       })
 
-      // Use Daytona git operations to commit and push
+      // Use Daytona git operations to commit and push with proper git configuration
+      const gitConfigCommands = `
+cd /workspace && 
+git config user.name "Claude Code" && 
+git config user.email "noreply@anthropic.com" && 
+git checkout -b ${branchName} && 
+git add . && 
+git commit -m "${commitMessage.replace(/"/g, '\\"')}" && 
+git push origin ${branchName}
+      `.trim()
+
       const commitResponse = await sandboxManager.fetch(new Request('http://internal/execute', {
         method: 'POST',
         headers: {
@@ -288,7 +298,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>`
         },
         body: JSON.stringify({
           sandboxId,
-          command: `cd /workspace && git checkout -b ${branchName} && git add . && git commit -m "${commitMessage}" && git push origin ${branchName}`,
+          command: gitConfigCommands,
           workingDirectory: '/workspace'
         })
       }))
