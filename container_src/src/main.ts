@@ -869,7 +869,7 @@ async function testClaudeHandler(req: http.IncomingMessage, res: http.ServerResp
 
   } catch (error) {
     console.error(error)
-    
+
     logWithContext('TEST_CLAUDE', 'Error in test Claude handler', {
       error: (error as Error).message,
       stack: (error as Error).stack

@@ -11,11 +11,11 @@ import {logWithContext} from './log'
 
 
 export class MyContainer extends Container {
-  defaultPort = 4005;
-  requiredPorts = [4005];
-  sleepAfter = '45m'; // Extended timeout for Claude Code processing
+  defaultPort = 8080;
+  requiredPorts = [8080];
+  sleepAfter = '5m'; // Extended timeout for Claude Code processing
   envVars: Record<string, string> = {
-    MESSAGE: 'I was passed in via the container class!',
+    MESSAGE: 'I was passed in via the container class!'
   };
 
   // Override fetch to handle environment variable setting for specific requests
