@@ -159,7 +159,7 @@ const DAYTONA_SETUP_HTML = `
             <div class="form-group">
                 <label for="apiKey">Daytona API Key *</label>
                 <input type="password" id="apiKey" name="apiKey" required 
-                       placeholder="dt_xxxx..." 
+                       placeholder="dtn... / dt_... / dta_..." 
                        autocomplete="off">
             </div>
             
@@ -236,11 +236,11 @@ async function handleDaytonaConfigSave(request: Request, env: any): Promise<Resp
     }
 
     // Validate API key format (basic check)
-    if (!apiKey.startsWith('dt_') && !apiKey.startsWith('dta_')) {
+    if (!apiKey.startsWith('dt_') && !apiKey.startsWith('dta_') && !apiKey.startsWith('dtn')) {
       logWithContext('DAYTONA_SETUP', 'Invalid API key format', {
         keyPrefix: apiKey.substring(0, 3)
       })
-      return generateSetupResponse('error', 'Invalid API key format. Daytona API keys should start with "dt_" or "dta_"')
+      return generateSetupResponse('error', 'Invalid API key format. Daytona API keys should start with "dt_", "dta_", or "dtn"')
     }
 
     // Validate API URL
