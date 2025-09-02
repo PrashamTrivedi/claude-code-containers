@@ -1,4 +1,6 @@
 import { getDecryptedGitHubCredentials, isGitHubAppConfigured, getGitHubConfigFromKV, isClaudeApiKeyConfigured } from "../kv_storage";
+import { isDaytonaConfigured, getDaytonaCredentials } from "../handlers/daytona_setup";
+import { DaytonaClient } from "../daytona_client";
 import { logWithContext } from "../log";
 
 export async function handleGitHubStatus(_request: Request, env: any): Promise<Response> {
@@ -33,6 +35,50 @@ export async function handleGitHubStatus(_request: Request, env: any): Promise<R
     // Check Claude API key configuration
     const claudeConfigured = await isClaudeApiKeyConfigured(env);
 
+    // Check Daytona configuration and connection
+    const daytonaConfigured = await isDaytonaConfigured(env);
+    let daytonaStatus = 'not configured';
+    let sandboxCount = 0;
+    
+    if (daytonaConfigured) {
+      try {
+        const daytonaCredentials = await getDaytonaCredentials(env);
+        if (daytonaCredentials) {
+          const daytonaClient = new DaytonaClient(daytonaCredentials.apiKey, daytonaCredentials.apiUrl);
+          const isHealthy = await daytonaClient.healthCheck();
+          
+          if (isHealthy) {
+            daytonaStatus = 'connected';
+            try {
+              const sandboxes = await daytonaClient.listSandboxes();
+              sandboxCount = sandboxes.length;
+            } catch {
+              // If we can't list sandboxes, we're still connected but can't get count
+              sandboxCount = 0;
+            }
+          } else {
+            daytonaStatus = 'connection failed';
+          }
+        }
+      } catch (error) {
+        logWithContext('GITHUB_STATUS', 'Error checking Daytona status', {
+          error: (error as Error).message
+        });
+        const errorMessage = (error as Error).message;
+        if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {
+          daytonaStatus = 'invalid credentials';
+        } else if (errorMessage.includes('403') || errorMessage.includes('Forbidden')) {
+          daytonaStatus = 'access denied';
+        } else if (errorMessage.includes('429') || errorMessage.includes('quota')) {
+          daytonaStatus = 'quota exceeded';
+        } else {
+          daytonaStatus = 'connection error';
+        }
+      }
+    }
+
+    const allConfigured = claudeConfigured && daytonaConfigured;
+
     const status = {
       configured: true,
       appId: credentials.appId,
@@ -44,8 +90,13 @@ export async function handleGitHubStatus(_request: Request, env: any): Promise<R
         configured: claudeConfigured,
         status: claudeConfigured ? 'ready' : 'not configured'
       },
+      daytona: {
+        configured: daytonaConfigured,
+        status: daytonaStatus,
+        activeSandboxes: sandboxCount
+      },
       lastChecked: new Date().toISOString(),
-      ready: true && claudeConfigured
+      ready: allConfigured && daytonaStatus === 'connected'
     };
 
     logWithContext('GITHUB_STATUS', 'GitHub app status retrieved successfully', {

@@ -261,7 +261,7 @@ async function handleDaytonaConfigSave(request: Request, env: any): Promise<Resp
 
     if (!isHealthy) {
       logWithContext('DAYTONA_SETUP', 'Daytona connection test failed')
-      return generateSetupResponse('error', 'Connection test failed. Please verify your API key and URL are correct.')
+      return generateSetupResponse('error', 'Connection test failed. Please verify your API key and URL are correct. Check that your Daytona account is active and has available quota.')
     }
 
     logWithContext('DAYTONA_SETUP', 'Daytona connection test successful')
@@ -283,7 +283,7 @@ async function handleDaytonaConfigSave(request: Request, env: any): Promise<Resp
       
       logWithContext('DAYTONA_SETUP', 'Daytona credentials stored successfully')
 
-      return generateSetupResponse('success', 'Daytona configuration saved successfully! Connection test passed.')
+      return generateSetupResponse('success', 'Daytona configuration saved successfully! Connection test passed.', '/gh-setup')
 
     } catch (storageError) {
       logWithContext('DAYTONA_SETUP', 'Error storing Daytona credentials', {
@@ -296,16 +296,36 @@ async function handleDaytonaConfigSave(request: Request, env: any): Promise<Resp
     logWithContext('DAYTONA_SETUP', 'Error processing Daytona setup', {
       error: (error as Error).message
     })
-    return generateSetupResponse('error', `Setup failed: ${(error as Error).message}`)
+    
+    const errorMessage = (error as Error).message
+    let userFriendlyMessage = 'Setup failed: ' + errorMessage
+    
+    // Provide more specific error messages for common issues
+    if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {
+      userFriendlyMessage = 'Invalid API key. Please check your Daytona API key and try again.'
+    } else if (errorMessage.includes('403') || errorMessage.includes('Forbidden')) {
+      userFriendlyMessage = 'Access denied. Your API key may not have the required permissions.'
+    } else if (errorMessage.includes('429') || errorMessage.includes('quota')) {
+      userFriendlyMessage = 'Rate limit exceeded or quota exhausted. Please wait and try again later.'
+    } else if (errorMessage.includes('network') || errorMessage.includes('fetch')) {
+      userFriendlyMessage = 'Network error. Please check your internet connection and try again.'
+    } else if (errorMessage.includes('timeout')) {
+      userFriendlyMessage = 'Connection timeout. The Daytona API may be temporarily unavailable.'
+    }
+    
+    return generateSetupResponse('error', userFriendlyMessage)
   }
 }
 
 /**
  * Generate setup response with status message
  */
-function generateSetupResponse(type: 'success' | 'error', message: string): Response {
+function generateSetupResponse(type: 'success' | 'error', message: string, nextUrl?: string): Response {
   const statusClass = type === 'success' ? 'success' : 'error'
-  const statusHtml = `<div class="info-box ${statusClass}"><h4>${type === 'success' ? 'Success!' : 'Error'}</h4><p>${message}</p></div>`
+  const nextButton = nextUrl && type === 'success' 
+    ? `<div style="margin-top: 15px;"><a href="${nextUrl}" class="btn setup">Continue to GitHub Setup</a></div>`
+    : ''
+  const statusHtml = `<div class="info-box ${statusClass}"><h4>${type === 'success' ? 'Success!' : 'Error'}</h4><p>${message}</p>${nextButton}</div>`
   
   const responseHtml = DAYTONA_SETUP_HTML.replace(
     '<div class="section">',

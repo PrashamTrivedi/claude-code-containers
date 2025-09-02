@@ -67,8 +67,8 @@ export async function handleClaudeSetup(request: Request, origin: string, env?: 
     <p>Your Anthropic API key has been securely stored and encrypted.</p>
     <p>Claude Code is now ready to process GitHub issues automatically!</p>
 
-    <a href="/gh-setup" class="next-btn">
-        Setup GitHub Integration
+    <a href="/daytona-setup" class="next-btn">
+        Setup Daytona Integration
     </a>
 
     <p><small>Your API key is encrypted and stored securely in Cloudflare's Durable Objects.</small></p>
@@ -278,7 +278,7 @@ export async function handleClaudeSetup(request: Request, origin: string, env?: 
         Only your worker deployment can decrypt and use it. It's never logged or exposed.
     </div>
 
-    <p><strong>Already configured?</strong> <a href="/gh-setup">Continue to GitHub Setup</a></p>
+    <p><strong>Already configured?</strong> <a href="/daytona-setup">Continue to Daytona Setup</a></p>
 
     <hr style="margin: 40px 0;">
     <p style="text-align: center;"><a href="/">Back to Home</a></p>
