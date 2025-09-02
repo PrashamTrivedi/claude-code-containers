@@ -1,94 +1,136 @@
 # Purpose
 
-Replace direct REST API calls with Daytona TypeScript SDK for cleaner and more maintainable code
+Simplify architecture by migrating from containerized Claude Code to direct Worker orchestration with Daytona sandboxes
 
 ## Original Ask
-Update daytona calls with TypeScript SDK. Take Nightona worker and sandbox manager as inspiration. MUST HAVE: There must not be any Rest API calls for Daytona.
+Worker manages github operations, we can checkout it in a daytona sandbox with the URL based on installation token and use filesystem+git there. Claude will run on `claude -c "cd /tmp/project && claude --dangerously-skip-permissions -p \"$(echo '${messageBase64}' | base64 -d)\" --continue --output-format json"` command
 
 ## Complexity and the reason behind it
-Complexity score: 2/5
-Reason: Simple refactoring required - replacing newly written REST API implementation with SDK methods. No backward compatibility concerns since this is fresh code.
+Complexity score: 4/5 - This is a significant architectural refactoring that affects the core processing flow, requires careful migration of functionality from containers to Worker/Daytona, and changes how Claude Code is invoked.
 
 ## Architectural changes required
 
-- Replace custom `DaytonaClient` class with SDK-based implementation
-- Update Durable Object to use SDK methods instead of direct API calls
-- Simplify code structure by leveraging SDK's built-in features
-- Adopt SDK's native error handling patterns
+### Current Architecture
+1. **Worker (src/index.ts)**: Routes requests, handles GitHub webhooks
+2. **Container (container_src/src/main.ts)**: Heavy Node.js container with Claude Code CLI, handles git operations, runs Claude, creates PRs
+3. **Daytona Sandbox Manager DO**: Manages sandbox lifecycle but delegates actual work to container
+4. **Flow**: Worker → Container → Clone Repo → Run Claude → Create PR
+
+### Proposed Architecture
+1. **Worker**: Orchestrates entire flow, manages GitHub operations (PR creation, comments)
+2. **Daytona Sandbox**: Lightweight environment for git/filesystem operations
+3. **Claude CLI**: Executed directly in sandbox via command
+4. **Flow**: Worker → Clone to Daytona → Execute Claude CLI → Worker creates PR
+
+### Key Changes
+- Eliminate container_src directory and container-specific code
+- Move GitHub operations from container to Worker
+- Use Daytona SDK's native git and filesystem operations
+- Execute Claude CLI via Daytona's process execution API
+- Remove Docker-related files and build scripts
 
 ## Backend changes required
 
-### Files to modify:
-1. **src/daytona_client.ts**
-   - Replace REST API implementation with SDK-based approach
-   - Create clean SDK wrapper class using `@daytonaio/sdk`
-   - Design optimal interface leveraging SDK capabilities
+### 1. Update Issue Handler (src/handlers/github_webhooks/issue.ts)
+- Remove container routing logic
+- Implement new flow:
+  - Clone repository to Daytona sandbox using SDK
+  - Prepare Claude prompt as base64-encoded message
+  - Execute Claude CLI command in sandbox
+  - Parse Claude's JSON output
+  - Check for file changes using Daytona's git operations
+  - Create PR directly from Worker using GitHub API
 
-2. **src/daytona_sandbox_manager.ts**
-   - Update to use new SDK-based client
-   - Replace direct API calls with SDK methods
-   - Implement SDK-native error handling
-   - Optimize state management using SDK features
+### 2. Enhance Daytona Sandbox Manager (src/daytona_sandbox_manager.ts)
+- Add method for git operations (status, diff, commit, push)
+- Add method for file operations (read PR summary file)
+- Improve command execution with better output parsing
 
-3. **src/handlers/daytona_setup.ts** (if needed)
-   - Update credential handling for SDK initialization
-   - Ensure proper SDK configuration
+### 3. Update Daytona Client (src/daytona_client.ts)
+- Add git operation methods using SDK's git module
+- Add filesystem operation methods using SDK's fs module
+- Enhance executeCommand to handle Claude CLI output
 
-### SDK Method Mappings:
-- `createSandbox()` → `daytona.create()`
-- `getSandbox()` → `daytona.findOne()`
-- `listSandboxes()` → `daytona.list()`
-- `startSandbox()` → `sandbox.start()`
-- `stopSandbox()` → `sandbox.stop()`
-- `deleteSandbox()` → `sandbox.delete()`
-- `executeCommand()` → `sandbox.process.executeCommand()`
-- `waitForSandboxStatus()` → `sandbox.waitUntilStarted()` / `sandbox.waitUntilStopped()`
+### 4. Refactor GitHub Client (src/github_client.ts)
+- Move PR creation logic from container to Worker
+- Add methods for creating branches and pushing changes
+- Ensure proper authentication with installation tokens
 
+### 5. Remove Container Components
+- Delete container_src directory 
+- Remove Dockerfile and Dockerfile.slim
+- Remove container build scripts
+- Update wrangler.jsonc to remove container bindings if any
+
+*Note After Review: Running rm commands is not available to you as we speak, you need to ask me to do it once everything else is done*
 ## Frontend changes required
 
-None required - this is purely a backend SDK migration
+None required - the frontend dashboard remains unchanged as it only displays status information.
 
 ## Acceptance Criteria
 
-1. All REST API calls to Daytona are replaced with SDK methods
-2. SDK-based implementation provides clean, maintainable code
-3. Error handling properly captures and handles SDK exceptions
-4. All sandbox lifecycle operations work correctly
-5. Command execution in sandboxes functions properly
-6. Health check mechanism works with SDK connectivity
+1. **Successful Issue Processing**
+   - GitHub issues trigger Claude Code analysis in Daytona sandbox
+   - Claude CLI executes successfully with proper prompt
+   - Solution is generated and returned
+
+2. **Git Operations**
+   - Repository cloned to Daytona sandbox with installation token auth
+   - File changes detected correctly
+   - Commits created with proper message
+   - Branch pushed to GitHub
+
+3. **PR Creation**
+   - Pull requests created from Worker
+   - PR includes Claude's solution and changes
+   - Comments posted to original issue
+
+4. **Clean Architecture**
+   - No container-related code remains
+   - All operations handled by Worker + Daytona
+   - Simplified deployment without Docker builds
+
+5. **Error Handling**
+   - Graceful handling of Claude CLI failures
+   - Proper error messages for git operation failures
+   - Fallback to comment posting if PR creation fails
 
 ## Validation
 
-### Backend API Flows:
-1. **Sandbox Creation Flow**
-   - Test creating a new sandbox via `/create` endpoint
-   - Verify sandbox reaches 'running' state
-   - Confirm proper error handling for invalid requests
+### Backend API Flows
 
-2. **Command Execution Flow**
-   - Execute test commands in running sandbox
-   - Verify stdout/stderr capture
-   - Test working directory and environment variable support
+1. **Issue Processing Flow**
+   ```
+   POST /webhooks/github (issue opened)
+   → Worker creates Daytona sandbox
+   → Clone repo with installation token
+   → Execute: claude -c "cd /workspace && claude --dangerously-skip-permissions -p \"$(echo '${messageBase64}' | base64 -d)\" --continue --output-format json"
+   → Parse Claude output
+   → Check git status for changes
+   → Create branch, commit, push
+   → Create PR via GitHub API
+   → Post comment on issue
+   ```
 
-3. **Sandbox Lifecycle Management**
-   - Test start/stop/delete operations
-   - Verify state transitions are properly tracked
-   - Confirm cleanup operations work correctly
+2. **Error Cases**
+   - Test with invalid Claude API key
+   - Test with non-existent repository
+   - Test with insufficient GitHub permissions
+   - Test with Claude CLI execution failures
 
-4. **Health Check**
-   - Verify `/health` endpoint returns correct status
-   - Test SDK connectivity validation
+### Commands to Test
 
-### Commands to run:
 ```bash
-npm run dev                    # Start local development
-npm run cf-typegen            # Regenerate types if needed
-npm run deploy                # Deploy to production
+# Start development server
+npm run dev
+
+
 ```
 
-### Manual Testing Steps:
-1. Configure Daytona API credentials via `/daytona-setup`
-2. Create a test sandbox via API or UI
-3. Execute commands in the sandbox
-4. Test sandbox lifecycle operations
-5. Verify cleanup and health check functionality
+### Expected Results
+- Issue triggers processing within 30 seconds
+- Daytona sandbox created and repository cloned
+- Claude CLI executes and generates solution
+- PR created with changes (if any)
+- Comment posted on issue with solution or PR link
+- No container-related errors in logs
