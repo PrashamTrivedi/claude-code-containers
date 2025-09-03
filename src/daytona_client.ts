@@ -1,5 +1,5 @@
-import { Daytona } from '@daytonaio/sdk'
-import { logWithContext } from './log'
+import {Daytona, Image} from '@daytonaio/sdk'
+import {logWithContext} from './log'
 
 // Daytona SDK interfaces (aligned with SDK types)
 export interface DaytonaSandbox {
@@ -50,11 +50,11 @@ export class DaytonaClient {
 
   constructor(apiKey: string, apiUrl: string = 'https://api.daytona.io') {
     this.apiUrl = apiUrl.replace(/\/$/, '') // Remove trailing slash
-    this.daytona = new Daytona({ 
+    this.daytona = new Daytona({
       apiKey,
       apiUrl: this.apiUrl
     })
-    
+
     logWithContext('DAYTONA_CLIENT', 'SDK client initialized', {
       apiUrl: this.apiUrl
     })
@@ -74,7 +74,8 @@ export class DaytonaClient {
 
     try {
       const sandbox = await this.daytona.create({
-        image: request.image || 'claude-code-container',
+        snapshot: 'claude-code-env',
+        user: 'claude',
         envVars: request.envVars || {},
         labels: {
           projectName: request.projectName,
@@ -111,11 +112,11 @@ export class DaytonaClient {
    * Get sandbox by ID
    */
   async getSandbox(sandboxId: string): Promise<DaytonaSandbox> {
-    logWithContext('DAYTONA_CLIENT', 'Getting sandbox via SDK', { sandboxId })
-    
+    logWithContext('DAYTONA_CLIENT', 'Getting sandbox via SDK', {sandboxId})
+
     try {
-      const sandbox = await this.daytona.findOne({ id: sandboxId })
-      
+      const sandbox = await this.daytona.findOne({id: sandboxId})
+
       return {
         id: sandbox.id,
         name: sandbox.labels?.name || sandbox.id,
@@ -139,11 +140,11 @@ export class DaytonaClient {
    * List all sandboxes
    */
   async listSandboxes(workspaceId?: string): Promise<DaytonaSandbox[]> {
-    logWithContext('DAYTONA_CLIENT', 'Listing sandboxes via SDK', { workspaceId })
-    
+    logWithContext('DAYTONA_CLIENT', 'Listing sandboxes via SDK', {workspaceId})
+
     try {
       const sandboxes = await this.daytona.list()
-      
+
       return sandboxes
         .filter(sandbox => !workspaceId || sandbox.organizationId === workspaceId)
         .map(sandbox => ({
@@ -168,12 +169,12 @@ export class DaytonaClient {
    * Start a sandbox
    */
   async startSandbox(sandboxId: string): Promise<DaytonaSandbox> {
-    logWithContext('DAYTONA_CLIENT', 'Starting sandbox via SDK', { sandboxId })
-    
+    logWithContext('DAYTONA_CLIENT', 'Starting sandbox via SDK', {sandboxId})
+
     try {
-      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      const sandbox = await this.daytona.findOne({id: sandboxId})
       await sandbox.start()
-      
+
       return {
         id: sandbox.id,
         name: sandbox.labels?.name || sandbox.id,
@@ -197,12 +198,12 @@ export class DaytonaClient {
    * Stop a sandbox
    */
   async stopSandbox(sandboxId: string): Promise<DaytonaSandbox> {
-    logWithContext('DAYTONA_CLIENT', 'Stopping sandbox via SDK', { sandboxId })
-    
+    logWithContext('DAYTONA_CLIENT', 'Stopping sandbox via SDK', {sandboxId})
+
     try {
-      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      const sandbox = await this.daytona.findOne({id: sandboxId})
       await sandbox.stop()
-      
+
       return {
         id: sandbox.id,
         name: sandbox.labels?.name || sandbox.id,
@@ -226,13 +227,13 @@ export class DaytonaClient {
    * Delete a sandbox
    */
   async deleteSandbox(sandboxId: string): Promise<void> {
-    logWithContext('DAYTONA_CLIENT', 'Deleting sandbox via SDK', { sandboxId })
-    
+    logWithContext('DAYTONA_CLIENT', 'Deleting sandbox via SDK', {sandboxId})
+
     try {
-      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      const sandbox = await this.daytona.findOne({id: sandboxId})
       await sandbox.delete()
-      
-      logWithContext('DAYTONA_CLIENT', 'Sandbox deleted successfully via SDK', { sandboxId })
+
+      logWithContext('DAYTONA_CLIENT', 'Sandbox deleted successfully via SDK', {sandboxId})
     } catch (error) {
       logWithContext('DAYTONA_CLIENT', 'Error deleting sandbox via SDK', {
         sandboxId,
@@ -257,13 +258,11 @@ export class DaytonaClient {
     })
 
     const startTime = Date.now()
-    
+
     try {
-      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      const sandbox = await this.daytona.findOne({id: sandboxId})
       const result = await sandbox.process.executeCommand(
-        request.command,
-        request.workingDirectory || undefined,
-        request.envVars || undefined
+        request.command
       )
 
       const actualDuration = Date.now() - startTime
@@ -310,9 +309,9 @@ export class DaytonaClient {
     })
 
     try {
-      const sandbox = await this.daytona.findOne({ id: sandboxId })
+      const sandbox = await this.daytona.findOne({id: sandboxId})
       const timeoutSeconds = Math.floor(timeoutMs / 1000)
-      
+
       if (targetStatus === 'running') {
         await sandbox.waitUntilStarted(timeoutSeconds)
       } else if (targetStatus === 'stopped') {
@@ -320,10 +319,10 @@ export class DaytonaClient {
       } else {
         // Fallback to polling for other statuses
         const startTime = Date.now()
-        
+
         while (Date.now() - startTime < timeoutMs) {
           const currentSandbox = await this.getSandbox(sandboxId)
-          
+
           if (currentSandbox.status === targetStatus) {
             logWithContext('DAYTONA_CLIENT', 'Sandbox reached target status via SDK', {
               sandboxId,
@@ -342,7 +341,7 @@ export class DaytonaClient {
 
         throw new Error(`Timeout waiting for sandbox ${sandboxId} to reach status ${targetStatus}`)
       }
-      
+
       // Return updated sandbox info
       return await this.getSandbox(sandboxId)
     } catch (error) {
@@ -360,7 +359,7 @@ export class DaytonaClient {
    */
   private mapSandboxState(state?: any): DaytonaSandbox['status'] {
     if (!state) return 'creating'
-    
+
     // Map SDK states to our interface states
     switch (state) {
       case 'STARTED':
@@ -427,19 +426,20 @@ export class DaytonaClient {
   ): Promise<ExecuteCommandResponse> {
     logWithContext('DAYTONA_CLIENT', 'Executing Claude CLI command', {
       sandboxId,
-      promptLength: prompt.length
+      promptLength: prompt.length,
+      prompt
     })
 
     // Base64 encode the prompt using modern Web API
-    const messageBase64 = btoa(new TextEncoder().encode(prompt).reduce((data, byte) => data + String.fromCharCode(byte), ''))
+    const messageBase64 = btoa(prompt)
 
     // Execute Claude CLI with the exact required format
-    const claudeCommand = `claude -c "cd /workspace && claude --dangerously-skip-permissions -p \"$(echo '${messageBase64}' | base64 -d)\" --continue --output-format json"`
+    const claudeCommand = `claude --dangerously-skip-permissions -p \"${prompt}\" --output-format json`
 
     try {
       const response = await this.executeCommand(sandboxId, {
         command: claudeCommand,
-        workingDirectory: '/workspace'
+        workingDirectory: '~/workspace'
       })
 
       logWithContext('DAYTONA_CLIENT', 'Claude CLI executed successfully', {
@@ -596,7 +596,7 @@ git push origin ${branchName}
 
     // Escape content for shell safety
     const escapedContent = content.replace(/'/g, "'\"'\"'")
-    
+
     try {
       const response = await this.executeCommand(sandboxId, {
         command: `echo '${escapedContent}' > "${filePath}"`,
@@ -626,10 +626,10 @@ git push origin ${branchName}
   async healthCheck(): Promise<boolean> {
     try {
       logWithContext('DAYTONA_CLIENT', 'Performing health check via SDK')
-      
+
       // Try to list sandboxes as a simple connectivity test
       await this.listSandboxes()
-      
+
       logWithContext('DAYTONA_CLIENT', 'Health check passed via SDK')
       return true
     } catch (error) {

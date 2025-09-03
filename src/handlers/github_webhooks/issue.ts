@@ -32,7 +32,7 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
 
   // Extract repository owner/name
   const [owner, repo] = repository.full_name.split('/')
-  
+
   // Get installation ID with discovery fallback
   logWithContext('CLAUDE_ROUTING', 'Discovering installation ID for repository', {
     owner,
@@ -157,7 +157,7 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
         sandboxId,
         gitUrl: repository.clone_url,
         installationToken,
-        workspaceDir: '/workspace'
+        workspaceDir: '~/workspace'
       })
     }))
 
@@ -178,7 +178,7 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
     logWithContext('CLAUDE_ROUTING', 'Repository cloned successfully')
 
     // Step 3: Execute Claude CLI with specific command format
-    const prompt = `You are working on GitHub issue #${issue.number}: "${issue.title}"
+    const prompt = `You are working on GitHub issue #${issue.number}: ${issue.title}
 
 Issue Description:
 ${issue.body || 'No description provided'}
@@ -186,7 +186,7 @@ ${issue.body || 'No description provided'}
 Labels: ${issue.labels?.map((label: any) => label.name).join(', ') || 'None'}
 Author: ${issue.user.login}
 
-The repository has been cloned to your current working directory. Please:
+The repository has been cloned to ~/workspace directory. Please:
 1. Explore the codebase to understand the structure and relevant files
 2. Analyze the issue requirements thoroughly
 3. Implement a solution that addresses the issue
@@ -197,7 +197,7 @@ The repository has been cloned to your current working directory. Please:
 
 Work step by step and provide clear explanations of your approach.`
 
-    logWithContext('CLAUDE_ROUTING', 'Executing Claude CLI with issue prompt')
+    logWithContext('CLAUDE_ROUTING', 'Executing Claude CLI with issue prompt', prompt)
 
     const executeResponse = await sandboxManager.fetch(new Request('http://internal/execute-claude', {
       method: 'POST',
@@ -238,7 +238,7 @@ Work step by step and provide clear explanations of your approach.`
       },
       body: JSON.stringify({
         sandboxId,
-        workspaceDir: '/workspace'
+        workspaceDir: '~/workspace'
       })
     }))
 
@@ -257,7 +257,7 @@ Work step by step and provide clear explanations of your approach.`
       throw new Error(`Failed to get changes: ${changesResult.error}`)
     }
 
-    const { hasChanges, prSummary } = changesResult.data
+    const {hasChanges, prSummary} = changesResult.data
 
     logWithContext('CLAUDE_ROUTING', 'Changes analysis completed', {
       hasChanges,
@@ -282,7 +282,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>`
 
       // Use Daytona git operations to commit and push with proper git configuration
       const gitConfigCommands = `
-cd /workspace && 
+cd ~/workspace && 
 git config user.name "Claude Code" && 
 git config user.email "noreply@anthropic.com" && 
 git checkout -b ${branchName} && 
@@ -299,7 +299,7 @@ git push origin ${branchName}
         body: JSON.stringify({
           sandboxId,
           command: gitConfigCommands,
-          workingDirectory: '/workspace'
+          workingDirectory: '~/workspace'
         })
       }))
 
@@ -489,7 +489,7 @@ export async function handleIssuesEvent(data: any, env: any): Promise<Response> 
           repo,
           data?.installation?.id?.toString()
         )
-        
+
         if (installationId) {
           const installationToken = await generateInstallationToken(env, installationId)
           if (installationToken) {

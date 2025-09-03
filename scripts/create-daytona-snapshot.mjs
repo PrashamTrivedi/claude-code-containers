@@ -5,7 +5,7 @@ import { readFileSync } from 'fs';
 
 // Generate unique snapshot name with timestamp  
 const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const CLAUDE_SNAPSHOT_NAME = `claude-code-env-1`;
+const CLAUDE_SNAPSHOT_NAME = `claude-code-env`;
 const DOCKERFILE_PATH = "Dockerfile.slim";
 
 async function createSnapshot() {
