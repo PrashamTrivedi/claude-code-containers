@@ -11,7 +11,7 @@
     "watch": "tsc --watch"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.27",
+    "@anthropic-ai/claude-code": "^1.0.87",
     "@octokit/rest": "^22.0.0",
     "simple-git": "^3.28.0"
   },
