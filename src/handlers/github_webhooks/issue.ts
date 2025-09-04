@@ -141,22 +141,30 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
       throw new Error(`Sandbox setup failed: ${createResult.error}`)
     }
 
-    const sandboxId = createResult.sandboxId
+    let sandboxId = createResult.sandboxId
 
     logWithContext('CLAUDE_ROUTING', 'Sandbox ready (created or reused)', {
       sandboxId,
       sandboxName
     })
 
-    // Step 2: Clone repository using Daytona git operations with retry logic
-    logWithContext('CLAUDE_ROUTING', 'Cloning repository in sandbox with retry logic')
+    // Step 2: Clone repository using Daytona git operations with enhanced retry and recovery logic
+    logWithContext('CLAUDE_ROUTING', 'Cloning repository in sandbox with comprehensive retry and state recovery logic')
 
     let cloneResult
     let cloneAttempts = 0
-    const maxCloneAttempts = 2
+    const maxCloneAttempts = 4 // Increased for better resilience
+    let currentSandboxId = sandboxId
+    let recoveryAttempts = 0
+    const maxRecoveryAttempts = 2
     
     while (cloneAttempts < maxCloneAttempts) {
       cloneAttempts++
+      
+      logWithContext('CLAUDE_ROUTING', `Starting clone attempt ${cloneAttempts}/${maxCloneAttempts}`, {
+        sandboxId: currentSandboxId,
+        recoveryAttempts
+      })
       
       const cloneResponse = await sandboxManager.fetch(new Request('http://internal/clone-and-setup', {
         method: 'POST',
@@ -164,7 +172,7 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          sandboxId,
+          sandboxId: currentSandboxId,
           gitUrl: repository.clone_url,
           installationToken,
           workspaceDir: '~/workspace'
@@ -173,23 +181,39 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
 
       if (!cloneResponse.ok) {
         const errorText = await cloneResponse.text().catch(() => 'Unable to read clone error')
-        logWithContext('CLAUDE_ROUTING', `Repository cloning failed (attempt ${cloneAttempts}/${maxCloneAttempts})`, {
+        logWithContext('CLAUDE_ROUTING', `Repository cloning request failed (attempt ${cloneAttempts}/${maxCloneAttempts})`, {
           status: cloneResponse.status,
-          errorText
+          errorText,
+          sandboxId: currentSandboxId
         })
         
-        // If this was a 'sandbox not running' error and we have attempts left, try creating a new sandbox
-        if (cloneAttempts < maxCloneAttempts && errorText.includes('not found') || errorText.includes('not running')) {
-          logWithContext('CLAUDE_ROUTING', 'Attempting to recover with new sandbox creation due to stale state')
+        // Enhanced recovery logic for different types of failures
+        const isStateError = errorText.includes('not found') || 
+                           errorText.includes('not running') || 
+                           errorText.includes('manually removed') ||
+                           errorText.includes('disappeared') ||
+                           errorText.includes('state synchronization') ||
+                           errorText.includes('sandbox may have been')
+        
+        const isRecoverable = isStateError && cloneAttempts < maxCloneAttempts && recoveryAttempts < maxRecoveryAttempts
+        
+        if (isRecoverable) {
+          recoveryAttempts++
+          logWithContext('CLAUDE_ROUTING', `Detected state synchronization issue - attempting recovery ${recoveryAttempts}/${maxRecoveryAttempts}`, {
+            errorText,
+            currentSandboxId
+          })
           
-          // Try to create a completely new sandbox
+          // Try to create a completely new sandbox with a unique name
+          const recoveryName = `${sandboxName}-recovery-${Date.now()}-${recoveryAttempts}`
+          
           const recoveryCreateResponse = await sandboxManager.fetch(new Request('http://internal/create', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-              name: `${sandboxName}-recovery-${Date.now()}`,
+              name: recoveryName,
               projectName: repository.name,
               gitUrl: repository.clone_url,
               envVars: {
@@ -204,31 +228,82 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
           if (recoveryCreateResponse.ok) {
             const recoveryCreateResult = await recoveryCreateResponse.json()
             if (recoveryCreateResult.success) {
-              sandboxId = recoveryCreateResult.sandboxId
+              const oldSandboxId = currentSandboxId
+              currentSandboxId = recoveryCreateResult.sandboxId
+              
               logWithContext('CLAUDE_ROUTING', 'Recovery sandbox created successfully', {
-                newSandboxId: sandboxId
+                oldSandboxId,
+                newSandboxId: currentSandboxId,
+                recoveryAttempt: recoveryAttempts,
+                cloneAttempt: cloneAttempts,
+                recoveryName
               })
               continue // Retry clone with new sandbox
+            } else {
+              logWithContext('CLAUDE_ROUTING', 'Recovery sandbox creation unsuccessful', {
+                error: recoveryCreateResult.error,
+                recoveryAttempt: recoveryAttempts,
+                cloneAttempt: cloneAttempts
+              })
             }
+          } else {
+            const recoveryErrorText = await recoveryCreateResponse.text().catch(() => 'Unable to read recovery error')
+            logWithContext('CLAUDE_ROUTING', 'Recovery sandbox creation request failed', {
+              status: recoveryCreateResponse.status,
+              errorText: recoveryErrorText,
+              recoveryAttempt: recoveryAttempts,
+              cloneAttempt: cloneAttempts
+            })
           }
         }
         
         if (cloneAttempts >= maxCloneAttempts) {
-          throw new Error(`Repository cloning failed after ${maxCloneAttempts} attempts: ${errorText}`)
+          throw new Error(`Repository cloning failed after ${maxCloneAttempts} attempts (${recoveryAttempts} recovery attempts): ${errorText}. This indicates a persistent issue with sandbox state synchronization.`)
         }
+        
+        // Wait before retry if no recovery was attempted
+        if (!isRecoverable) {
+          await new Promise(resolve => setTimeout(resolve, 2000))
+        }
+        
       } else {
         cloneResult = await cloneResponse.json()
         if (!cloneResult.success) {
-          if (cloneAttempts >= maxCloneAttempts) {
-            throw new Error(`Repository cloning failed: ${cloneResult.error}`)
-          }
-          logWithContext('CLAUDE_ROUTING', `Clone unsuccessful (attempt ${cloneAttempts}/${maxCloneAttempts})`, {
-            error: cloneResult.error
+          logWithContext('CLAUDE_ROUTING', `Clone response unsuccessful (attempt ${cloneAttempts}/${maxCloneAttempts})`, {
+            error: cloneResult.error,
+            sandboxId: currentSandboxId
           })
+          
+          // Check if this is also a state error that needs recovery
+          const isStateError = cloneResult.error?.includes('not found') || 
+                             cloneResult.error?.includes('not running') || 
+                             cloneResult.error?.includes('manually removed') ||
+                             cloneResult.error?.includes('disappeared') ||
+                             cloneResult.error?.includes('state synchronization')
+          
+          const isRecoverable = isStateError && cloneAttempts < maxCloneAttempts && recoveryAttempts < maxRecoveryAttempts
+          
+          if (isRecoverable) {
+            logWithContext('CLAUDE_ROUTING', 'Clone response indicates state issue - will attempt recovery on next iteration')
+            continue // This will trigger the recovery logic above on the next iteration
+          }
+          
+          if (cloneAttempts >= maxCloneAttempts) {
+            throw new Error(`Repository cloning failed after ${maxCloneAttempts} attempts: ${cloneResult.error}`)
+          }
+          
+          // Wait before retry
+          await new Promise(resolve => setTimeout(resolve, 1500))
           continue
         }
         
-        // Success!
+        // Success! Update the sandboxId variable to use the current working sandbox
+        sandboxId = currentSandboxId
+        logWithContext('CLAUDE_ROUTING', 'Clone successful after enhanced retry logic', {
+          finalSandboxId: sandboxId,
+          totalAttempts: cloneAttempts,
+          recoveryAttempts: recoveryAttempts
+        })
         break
       }
     }
@@ -260,16 +335,49 @@ Work step by step and provide clear explanations of your approach.`
 
     logWithContext('CLAUDE_ROUTING', 'Executing Claude CLI with issue prompt', {sandboxId, promptLength: prompt.length})
 
-    // Validate sandbox is still running before executing Claude
-    const preExecuteStatus = await sandboxManager.fetch(new Request(`http://internal/get?sandboxId=${sandboxId}`))
-    if (preExecuteStatus.ok) {
-      const statusResult = await preExecuteStatus.json()
-      if (statusResult.success && statusResult.data?.status !== 'running') {
-        logWithContext('CLAUDE_ROUTING', 'Sandbox not running before Claude execution', {
+    // Validate sandbox is still running before executing Claude with enhanced checking
+    let preExecuteValidation = false
+    let validationAttempts = 0
+    const maxValidationAttempts = 2
+    
+    while (!preExecuteValidation && validationAttempts < maxValidationAttempts) {
+      validationAttempts++
+      
+      const preExecuteStatus = await sandboxManager.fetch(new Request(`http://internal/get?sandboxId=${sandboxId}`))
+      if (preExecuteStatus.ok) {
+        const statusResult = await preExecuteStatus.json()
+        if (statusResult.success && statusResult.data?.status === 'running') {
+          preExecuteValidation = true
+          logWithContext('CLAUDE_ROUTING', 'Sandbox validated as running before Claude execution', {
+            sandboxId,
+            status: statusResult.data?.status,
+            validationAttempt: validationAttempts
+          })
+        } else {
+          logWithContext('CLAUDE_ROUTING', `Sandbox validation failed (attempt ${validationAttempts}/${maxValidationAttempts})`, {
+            sandboxId,
+            status: statusResult.data?.status || 'unknown',
+            success: statusResult.success
+          })
+          
+          if (validationAttempts >= maxValidationAttempts) {
+            throw new Error(`Sandbox ${sandboxId} validation failed - status: ${statusResult.data?.status || 'unknown'}. Sandbox may not be ready for execution.`)
+          }
+          
+          // Wait before retry
+          await new Promise(resolve => setTimeout(resolve, 3000))
+        }
+      } else {
+        logWithContext('CLAUDE_ROUTING', `Sandbox status check request failed (attempt ${validationAttempts}/${maxValidationAttempts})`, {
           sandboxId,
-          status: statusResult.data?.status
+          status: preExecuteStatus.status
         })
-        throw new Error(`Sandbox ${sandboxId} is not running (status: ${statusResult.data?.status})`)
+        
+        if (validationAttempts >= maxValidationAttempts) {
+          throw new Error(`Unable to validate sandbox ${sandboxId} status before Claude execution`)
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 3000))
       }
     }
 
@@ -317,16 +425,49 @@ Work step by step and provide clear explanations of your approach.`
     // Step 4: Check for git changes with validation
     logWithContext('CLAUDE_ROUTING', 'Checking for file changes with sandbox validation')
 
-    // Validate sandbox is still accessible before checking changes
-    const preChangesStatus = await sandboxManager.fetch(new Request(`http://internal/get?sandboxId=${sandboxId}`))
-    if (preChangesStatus.ok) {
-      const statusResult = await preChangesStatus.json()
-      if (statusResult.success && statusResult.data?.status !== 'running') {
-        logWithContext('CLAUDE_ROUTING', 'Sandbox not running before changes check', {
+    // Validate sandbox is still accessible before checking changes with enhanced validation
+    let preChangesValidation = false
+    let changesValidationAttempts = 0
+    const maxChangesValidationAttempts = 2
+    
+    while (!preChangesValidation && changesValidationAttempts < maxChangesValidationAttempts) {
+      changesValidationAttempts++
+      
+      const preChangesStatus = await sandboxManager.fetch(new Request(`http://internal/get?sandboxId=${sandboxId}`))
+      if (preChangesStatus.ok) {
+        const statusResult = await preChangesStatus.json()
+        if (statusResult.success && statusResult.data?.status === 'running') {
+          preChangesValidation = true
+          logWithContext('CLAUDE_ROUTING', 'Sandbox validated as running before changes check', {
+            sandboxId,
+            status: statusResult.data?.status,
+            validationAttempt: changesValidationAttempts
+          })
+        } else {
+          logWithContext('CLAUDE_ROUTING', `Sandbox validation before changes failed (attempt ${changesValidationAttempts}/${maxChangesValidationAttempts})`, {
+            sandboxId,
+            status: statusResult.data?.status || 'unknown',
+            success: statusResult.success
+          })
+          
+          if (changesValidationAttempts >= maxChangesValidationAttempts) {
+            throw new Error(`Sandbox ${sandboxId} validation failed before changes check - status: ${statusResult.data?.status || 'unknown'}`)
+          }
+          
+          // Wait before retry
+          await new Promise(resolve => setTimeout(resolve, 2000))
+        }
+      } else {
+        logWithContext('CLAUDE_ROUTING', `Sandbox status check before changes failed (attempt ${changesValidationAttempts}/${maxChangesValidationAttempts})`, {
           sandboxId,
-          status: statusResult.data?.status
+          status: preChangesStatus.status
         })
-        throw new Error(`Sandbox ${sandboxId} is not running during changes check (status: ${statusResult.data?.status})`)
+        
+        if (changesValidationAttempts >= maxChangesValidationAttempts) {
+          throw new Error(`Unable to validate sandbox ${sandboxId} status before changes check`)
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 2000))
       }
     }
 

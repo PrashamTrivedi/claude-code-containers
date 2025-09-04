@@ -215,16 +215,19 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * Find sandbox by issue ID from stored state and Daytona API with enhanced state synchronization
+   * Find sandbox by issue ID from stored state and Daytona API with comprehensive state synchronization
    */
   private async findSandboxByIssueId(issueId: string): Promise<DaytonaSandbox | null> {
-    logWithContext('SANDBOX_MANAGER_DO', 'Finding sandbox by issue ID with state sync', {issueId})
+    logWithContext('SANDBOX_MANAGER_DO', 'Finding sandbox by issue ID with enhanced state sync', {issueId})
 
     try {
-      // First, check our stored state for matching issueId
+      let staleSandboxIds: string[] = []
+      let foundSandbox: DaytonaSandbox | null = null
+      
+      // First, check our stored state for matching issueId and validate all references
       for (const [sandboxId, state] of this.sandboxes.entries()) {
         if (state.issueId === issueId) {
-          logWithContext('SANDBOX_MANAGER_DO', 'Found sandbox in stored state', {
+          logWithContext('SANDBOX_MANAGER_DO', 'Found sandbox candidate in stored state', {
             issueId,
             sandboxId,
             status: state.status
@@ -238,7 +241,6 @@ export class DaytonaSandboxManagerDO extends DurableObject {
             state.status = currentSandbox.status
             state.lastUpdated = currentSandbox.updated
             this.sandboxes.set(sandboxId, state)
-            await this.saveSandboxState()
             
             logWithContext('SANDBOX_MANAGER_DO', 'Verified sandbox exists and updated state', {
               issueId,
@@ -246,27 +248,54 @@ export class DaytonaSandboxManagerDO extends DurableObject {
               currentStatus: currentSandbox.status
             })
             
-            return currentSandbox
+            foundSandbox = currentSandbox
+            break // Found valid sandbox, stop searching
+            
           } catch (error) {
-            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox in stored state no longer exists in Daytona - cleaning up', {
+            const errorMessage = (error as Error).message
+            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox in stored state no longer exists in Daytona - marking for cleanup', {
               issueId,
               sandboxId,
-              error: (error as Error).message
+              error: errorMessage
             })
             
-            // Remove from stored state since it no longer exists
-            this.sandboxes.delete(sandboxId)
-            await this.saveSandboxState()
-            
-            // Continue searching instead of returning null immediately
+            // Mark for cleanup but continue searching for other matches
+            staleSandboxIds.push(sandboxId)
           }
         }
       }
       
-      // If not found in stored state or stale references cleaned up, search Daytona directly
-      logWithContext('SANDBOX_MANAGER_DO', 'Searching Daytona platform directly for sandbox', {issueId})
+      // Clean up all stale references found during validation
+      if (staleSandboxIds.length > 0) {
+        logWithContext('SANDBOX_MANAGER_DO', 'Cleaning up stale sandbox references', {
+          staleSandboxIds,
+          count: staleSandboxIds.length
+        })
+        
+        for (const staleId of staleSandboxIds) {
+          this.sandboxes.delete(staleId)
+        }
+        await this.saveSandboxState()
+      }
       
-      const daytonaSandbox = await this.daytonaClient!.findSandboxByIssueId(issueId)
+      // If we found a valid sandbox in stored state, return it
+      if (foundSandbox) {
+        return foundSandbox
+      }
+      
+      // If not found in stored state or all references were stale, search Daytona directly
+      logWithContext('SANDBOX_MANAGER_DO', 'No valid sandbox in stored state - searching Daytona platform directly', {issueId})
+      
+      let daytonaSandbox: DaytonaSandbox | null = null
+      try {
+        daytonaSandbox = await this.daytonaClient!.findSandboxByIssueId(issueId)
+      } catch (searchError) {
+        logWithContext('SANDBOX_MANAGER_DO', 'Error searching Daytona platform directly', {
+          issueId,
+          error: (searchError as Error).message
+        })
+        // Continue execution - we'll return null if no sandbox found
+      }
       
       if (daytonaSandbox) {
         logWithContext('SANDBOX_MANAGER_DO', 'Found sandbox in Daytona platform - updating stored state', {
@@ -295,7 +324,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       return daytonaSandbox
       
     } catch (error) {
-      logWithContext('SANDBOX_MANAGER_DO', 'Error finding sandbox by issue ID', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error finding sandbox by issue ID with enhanced sync', {
         issueId,
         error: (error as Error).message
       })
@@ -453,18 +482,30 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       }
       
       // Create new sandbox if no existing one found or existing one couldn't be reused
-      logWithContext('SANDBOX_MANAGER_DO', 'Creating new sandbox', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Creating new sandbox with enhanced state validation', {
         name: createRequest.name,
         projectName: createRequest.projectName
       })
       
-      const sandbox = await this.daytonaClient!.createSandbox({
-        name: createRequest.name,
-        projectName: createRequest.projectName,
-        gitUrl: createRequest.gitUrl,
-        image: 'claude-code-env', // Use our custom container image
-        envVars: createRequest.envVars
-      })
+      let sandbox: any
+      try {
+        sandbox = await this.daytonaClient!.createSandbox({
+          name: createRequest.name,
+          projectName: createRequest.projectName,
+          gitUrl: createRequest.gitUrl,
+          image: 'claude-code-env', // Use our custom container image
+          envVars: createRequest.envVars
+        })
+      } catch (createError) {
+        logWithContext('SANDBOX_MANAGER_DO', 'Failed to create sandbox', {
+          error: (createError as Error).message
+        })
+        
+        return Response.json({
+          success: false,
+          error: `Failed to create sandbox: ${(createError as Error).message}`
+        } as SandboxManagerResponse, {status: 500})
+      }
 
       // Store sandbox state
       const sandboxState: SandboxState = {
@@ -482,8 +523,13 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       this.sandboxes.set(sandbox.id, sandboxState)
       await this.saveSandboxState()
 
-      // Wait for sandbox to be running using SDK's waitUntilStarted with enhanced validation
+      // Wait for sandbox to be running with comprehensive validation and recovery
       try {
+        logWithContext('SANDBOX_MANAGER_DO', 'Waiting for sandbox to reach running state', {
+          sandboxId: sandbox.id,
+          initialStatus: sandbox.status
+        })
+        
         await this.daytonaClient!.waitForSandboxStatus(
           sandbox.id,
           'running',
@@ -491,11 +537,52 @@ export class DaytonaSandboxManagerDO extends DurableObject {
           3000    // 3 second polling
         )
 
-        // Double-check sandbox state after waiting
-        const finalStatus = await this.daytonaClient!.getSandbox(sandbox.id)
+        // Triple-check sandbox state after waiting - get fresh status from platform
+        let finalStatus: any
+        let statusVerificationAttempts = 0
+        const maxStatusVerificationAttempts = 3
         
-        if (finalStatus.status !== 'running') {
-          throw new Error(`Sandbox reached status '${finalStatus.status}' instead of 'running'`)
+        while (statusVerificationAttempts < maxStatusVerificationAttempts) {
+          statusVerificationAttempts++
+          
+          try {
+            finalStatus = await this.daytonaClient!.getSandbox(sandbox.id)
+            
+            if (finalStatus.status === 'running') {
+              logWithContext('SANDBOX_MANAGER_DO', 'Sandbox status verified as running', {
+                sandboxId: sandbox.id,
+                verificationAttempt: statusVerificationAttempts,
+                finalStatus: finalStatus.status
+              })
+              break
+            } else {
+              logWithContext('SANDBOX_MANAGER_DO', 'Sandbox status not running - waiting before retry', {
+                sandboxId: sandbox.id,
+                currentStatus: finalStatus.status,
+                verificationAttempt: statusVerificationAttempts
+              })
+              
+              if (statusVerificationAttempts < maxStatusVerificationAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 2000)) // Wait 2 seconds
+              }
+            }
+          } catch (statusError) {
+            logWithContext('SANDBOX_MANAGER_DO', `Status verification attempt ${statusVerificationAttempts} failed`, {
+              sandboxId: sandbox.id,
+              error: (statusError as Error).message,
+              verificationAttempt: statusVerificationAttempts
+            })
+            
+            if (statusVerificationAttempts >= maxStatusVerificationAttempts) {
+              throw new Error(`Sandbox created but disappeared from platform during startup verification: ${(statusError as Error).message}`)
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 2000)) // Wait before retry
+          }
+        }
+        
+        if (!finalStatus || finalStatus.status !== 'running') {
+          throw new Error(`Sandbox reached status '${finalStatus?.status || 'unknown'}' instead of 'running' after ${statusVerificationAttempts} verification attempts`)
         }
 
         // Update state with validated running sandbox
@@ -504,9 +591,10 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         this.sandboxes.set(sandbox.id, sandboxState)
         await this.saveSandboxState()
 
-        logWithContext('SANDBOX_MANAGER_DO', 'New sandbox successfully started and validated via SDK', {
+        logWithContext('SANDBOX_MANAGER_DO', 'New sandbox successfully started and verified running', {
           sandboxId: sandbox.id,
-          status: finalStatus.status
+          finalStatus: finalStatus.status,
+          verificationAttempts: statusVerificationAttempts
         })
 
         return Response.json({
@@ -516,16 +604,33 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         } as SandboxManagerResponse<DaytonaSandbox>)
 
       } catch (startupError) {
-        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox startup timeout or error via SDK - cleaning up', {
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox startup timeout or validation error - performing comprehensive cleanup', {
           sandboxId: sandbox.id,
           error: (startupError as Error).message
         })
 
         // Clean up failed sandbox from both platform and stored state
         try {
-          await this.daytonaClient!.deleteSandbox(sandbox.id)
+          // Try to get sandbox status first to see if it exists
+          try {
+            const failedSandbox = await this.daytonaClient!.getSandbox(sandbox.id)
+            logWithContext('SANDBOX_MANAGER_DO', 'Failed sandbox still exists on platform - deleting', {
+              sandboxId: sandbox.id,
+              currentStatus: failedSandbox.status
+            })
+            
+            await this.daytonaClient!.deleteSandbox(sandbox.id)
+            logWithContext('SANDBOX_MANAGER_DO', 'Failed sandbox deleted from platform', {
+              sandboxId: sandbox.id
+            })
+          } catch (getError) {
+            logWithContext('SANDBOX_MANAGER_DO', 'Failed sandbox no longer exists on platform - cleanup not needed', {
+              sandboxId: sandbox.id,
+              error: (getError as Error).message
+            })
+          }
         } catch (cleanupError) {
-          logWithContext('SANDBOX_MANAGER_DO', 'Failed to cleanup failed sandbox', {
+          logWithContext('SANDBOX_MANAGER_DO', 'Failed to cleanup failed sandbox from platform', {
             sandboxId: sandbox.id,
             cleanupError: (cleanupError as Error).message
           })
@@ -536,7 +641,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
 
         return Response.json({
           success: false,
-          error: `Sandbox created but failed to start: ${(startupError as Error).message}`,
+          error: `Sandbox created but failed to start or validate: ${(startupError as Error).message}. The sandbox has been cleaned up automatically.`,
           sandboxId: sandbox.id
         } as SandboxManagerResponse, {status: 500})
       }
@@ -856,12 +961,12 @@ Work step by step and provide clear explanations of your approach.`
   }
 
   /**
-   * Clone repository and prepare workspace with enhanced state validation
+   * Clone repository and prepare workspace with comprehensive state validation and recovery
    */
   private async handleCloneAndSetup(request: Request): Promise<Response> {
     const cloneRequest: CloneAndSetupRequest = await request.json()
 
-    logWithContext('SANDBOX_MANAGER_DO', 'Cloning and setting up workspace with state validation', {
+    logWithContext('SANDBOX_MANAGER_DO', 'Cloning and setting up workspace with comprehensive state validation', {
       sandboxId: cloneRequest.sandboxId,
       gitUrl: cloneRequest.gitUrl
     })
@@ -869,12 +974,18 @@ Work step by step and provide clear explanations of your approach.`
     try {
       const workspaceDir = cloneRequest.workspaceDir || '~/workspace'
       
-      // First, validate that the sandbox exists and is running
+      // First, validate that the sandbox exists and get its current state
       let sandbox: DaytonaSandbox
       try {
         sandbox = await this.daytonaClient!.getSandbox(cloneRequest.sandboxId)
+        
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox found on platform for clone operation', {
+          sandboxId: cloneRequest.sandboxId,
+          status: sandbox.status
+        })
+        
       } catch (sandboxError) {
-        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox not found during clone setup', {
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox not found on Daytona platform during clone setup', {
           sandboxId: cloneRequest.sandboxId,
           error: (sandboxError as Error).message
         })
@@ -883,44 +994,167 @@ Work step by step and provide clear explanations of your approach.`
         this.sandboxes.delete(cloneRequest.sandboxId)
         await this.saveSandboxState()
         
-        throw new Error(`Sandbox ${cloneRequest.sandboxId} not found. It may have been manually removed from Daytona platform.`)
+        throw new Error(`Sandbox ${cloneRequest.sandboxId} not found on Daytona platform. It may have been manually removed - please create a new sandbox.`)
       }
       
-      // Check if sandbox is in running state
+      // Check if sandbox is in running state and handle different states with enhanced recovery
       if (sandbox.status !== 'running') {
-        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox not running - attempting to start', {
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox not running - attempting recovery with enhanced logic', {
           sandboxId: cloneRequest.sandboxId,
           currentStatus: sandbox.status
         })
         
         if (sandbox.status === 'stopped') {
-          // Try to start the stopped sandbox
-          try {
-            await this.daytonaClient!.startSandbox(cloneRequest.sandboxId)
+          // Try to start the stopped sandbox with multiple attempts
+          let startAttempts = 0
+          const maxStartAttempts = 2
+          let startSuccessful = false
+          
+          while (startAttempts < maxStartAttempts && !startSuccessful) {
+            startAttempts++
             
-            // Wait for it to be running
+            try {
+              logWithContext('SANDBOX_MANAGER_DO', `Starting stopped sandbox for clone operation (attempt ${startAttempts}/${maxStartAttempts})`, {
+                sandboxId: cloneRequest.sandboxId
+              })
+              
+              await this.daytonaClient!.startSandbox(cloneRequest.sandboxId)
+              
+              // Wait for it to be running with proper error handling
+              sandbox = await this.daytonaClient!.waitForSandboxStatus(
+                cloneRequest.sandboxId,
+                'running',
+                120000, // 2 minutes timeout
+                3000    // 3 second polling
+              )
+              
+              // Verify the sandbox is truly running
+              const verificationStatus = await this.daytonaClient!.getSandbox(cloneRequest.sandboxId)
+              if (verificationStatus.status === 'running') {
+                startSuccessful = true
+                logWithContext('SANDBOX_MANAGER_DO', 'Sandbox started and verified running for clone operation', {
+                  sandboxId: cloneRequest.sandboxId,
+                  finalStatus: verificationStatus.status,
+                  attempts: startAttempts
+                })
+                sandbox = verificationStatus
+              } else {
+                throw new Error(`Sandbox status verification failed - expected 'running', got '${verificationStatus.status}'`)
+              }
+              
+            } catch (startError) {
+              logWithContext('SANDBOX_MANAGER_DO', `Start attempt ${startAttempts} failed`, {
+                sandboxId: cloneRequest.sandboxId,
+                error: (startError as Error).message,
+                attempts: startAttempts
+              })
+              
+              if (startAttempts >= maxStartAttempts) {
+                // Remove from stored state since it can't be started
+                this.sandboxes.delete(cloneRequest.sandboxId)
+                await this.saveSandboxState()
+                
+                throw new Error(`Sandbox is stopped and could not be started after ${maxStartAttempts} attempts: ${(startError as Error).message}. Please create a new sandbox.`)
+              }
+              
+              // Wait before retry
+              await new Promise(resolve => setTimeout(resolve, 3000))
+            }
+          }
+          
+        } else if (sandbox.status === 'creating') {
+          // Wait for sandbox creation to complete with enhanced monitoring
+          try {
+            logWithContext('SANDBOX_MANAGER_DO', 'Waiting for sandbox creation to complete with enhanced monitoring', {
+              sandboxId: cloneRequest.sandboxId
+            })
+            
             sandbox = await this.daytonaClient!.waitForSandboxStatus(
               cloneRequest.sandboxId,
               'running',
-              120000, // 2 minutes timeout
-              3000    // 3 second polling
+              180000, // 3 minutes for creation
+              3000
             )
             
-            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox started successfully for clone', {
+            // Double-check the status
+            const finalCheck = await this.daytonaClient!.getSandbox(cloneRequest.sandboxId)
+            if (finalCheck.status !== 'running') {
+              throw new Error(`Sandbox creation completed but status is '${finalCheck.status}' instead of 'running'`)
+            }
+            
+            sandbox = finalCheck
+            
+            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox creation completed and verified successfully', {
               sandboxId: cloneRequest.sandboxId,
-              status: sandbox.status
+              finalStatus: sandbox.status
             })
             
-          } catch (startError) {
-            logWithContext('SANDBOX_MANAGER_DO', 'Failed to start sandbox for clone', {
+          } catch (creationError) {
+            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox creation failed or timed out', {
               sandboxId: cloneRequest.sandboxId,
-              error: (startError as Error).message
+              error: (creationError as Error).message
             })
             
-            throw new Error(`Sandbox is not running and could not be started: ${(startError as Error).message}`)
+            throw new Error(`Sandbox creation failed or timed out: ${(creationError as Error).message}`)
           }
+          
+        } else if (sandbox.status === 'failed') {
+          logWithContext('SANDBOX_MANAGER_DO', 'Sandbox is in failed state - performing comprehensive cleanup', {
+            sandboxId: cloneRequest.sandboxId
+          })
+          
+          // Clean up failed sandbox
+          try {
+            await this.daytonaClient!.deleteSandbox(cloneRequest.sandboxId)
+            logWithContext('SANDBOX_MANAGER_DO', 'Failed sandbox cleaned up from platform', {
+              sandboxId: cloneRequest.sandboxId
+            })
+          } catch (cleanupError) {
+            logWithContext('SANDBOX_MANAGER_DO', 'Failed to cleanup failed sandbox from platform', {
+              sandboxId: cloneRequest.sandboxId,
+              error: (cleanupError as Error).message
+            })
+          }
+          
+          this.sandboxes.delete(cloneRequest.sandboxId)
+          await this.saveSandboxState()
+          
+          throw new Error(`Sandbox is in failed state and has been cleaned up. Please create a new sandbox.`)
+          
+        } else if (sandbox.status === 'stopping') {
+          logWithContext('SANDBOX_MANAGER_DO', 'Sandbox is stopping - waiting for stop to complete then restarting', {
+            sandboxId: cloneRequest.sandboxId
+          })
+          
+          try {
+            // Wait for stop to complete
+            await this.daytonaClient!.waitForSandboxStatus(
+              cloneRequest.sandboxId,
+              'stopped',
+              60000, // 1 minute timeout
+              2000
+            )
+            
+            // Now start it
+            await this.daytonaClient!.startSandbox(cloneRequest.sandboxId)
+            sandbox = await this.daytonaClient!.waitForSandboxStatus(
+              cloneRequest.sandboxId,
+              'running',
+              120000,
+              3000
+            )
+            
+            logWithContext('SANDBOX_MANAGER_DO', 'Stopping sandbox restarted successfully', {
+              sandboxId: cloneRequest.sandboxId,
+              finalStatus: sandbox.status
+            })
+            
+          } catch (restartError) {
+            throw new Error(`Sandbox was stopping and could not be restarted: ${(restartError as Error).message}`)
+          }
+          
         } else {
-          throw new Error(`Sandbox is in '${sandbox.status}' state and cannot be used for cloning`)
+          throw new Error(`Sandbox is in '${sandbox.status}' state and cannot be used for cloning. Please wait for it to reach running state or create a new sandbox.`)
         }
       }
       
@@ -933,8 +1167,13 @@ Work step by step and provide clear explanations of your approach.`
         await this.saveSandboxState()
       }
       
+      // Final validation before proceeding with clone
+      if (sandbox.status !== 'running') {
+        throw new Error(`Sandbox status validation failed - expected 'running' but got '${sandbox.status}'`)
+      }
+      
       // Now proceed with cloning
-      logWithContext('SANDBOX_MANAGER_DO', 'Sandbox validated - proceeding with clone', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Sandbox fully validated and running - proceeding with clone', {
         sandboxId: cloneRequest.sandboxId,
         status: sandbox.status
       })
@@ -946,6 +1185,10 @@ Work step by step and provide clear explanations of your approach.`
         cloneRequest.installationToken
       )
 
+      logWithContext('SANDBOX_MANAGER_DO', 'Repository cloned successfully with comprehensive validation', {
+        sandboxId: cloneRequest.sandboxId
+      })
+
       return Response.json({
         success: true,
         data: result,
@@ -953,7 +1196,7 @@ Work step by step and provide clear explanations of your approach.`
       } as SandboxManagerResponse)
 
     } catch (error) {
-      logWithContext('SANDBOX_MANAGER_DO', 'Error in clone and setup with enhanced validation', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error in clone and setup with comprehensive validation', {
         sandboxId: cloneRequest.sandboxId,
         error: (error as Error).message
       })

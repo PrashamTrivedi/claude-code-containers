@@ -301,7 +301,7 @@ export class DaytonaClient {
     sandboxId: string,
     request: ExecuteCommandRequest
   ): Promise<ExecuteCommandResponse> {
-    logWithContext('DAYTONA_CLIENT', 'Executing command in sandbox via SDK with validation', {
+    logWithContext('DAYTONA_CLIENT', 'Executing command in sandbox via SDK with comprehensive validation', {
       sandboxId,
       command: request.command.substring(0, 100),
       workingDirectory: request.workingDirectory,
@@ -309,59 +309,103 @@ export class DaytonaClient {
     })
 
     const startTime = Date.now()
+    let validationAttempts = 0
+    const maxValidationAttempts = 2
 
-    try {
-      // First, validate the sandbox exists and is in a good state
-      const sandbox = await this.daytona.findOne({id: sandboxId})
+    while (validationAttempts < maxValidationAttempts) {
+      validationAttempts++
       
-      // Check sandbox state before executing command
-      if (sandbox.state !== 'STARTED') {
-        logWithContext('DAYTONA_CLIENT', 'Sandbox not in started state for command execution', {
+      try {
+        // First, validate the sandbox exists and is in a good state
+        const sandbox = await this.daytona.findOne({id: sandboxId})
+        
+        // Check sandbox state before executing command
+        if (sandbox.state !== 'STARTED') {
+          logWithContext('DAYTONA_CLIENT', `Sandbox not in started state for command execution (attempt ${validationAttempts}/${maxValidationAttempts})`, {
+            sandboxId,
+            currentState: sandbox.state
+          })
+          
+          if (sandbox.state === 'STARTING') {
+            // Wait for sandbox to finish starting
+            logWithContext('DAYTONA_CLIENT', 'Sandbox is starting - waiting for completion', {
+              sandboxId,
+              attempt: validationAttempts
+            })
+            
+            await sandbox.waitUntilStarted(60) // 1 minute timeout
+            
+            // Retry validation after waiting
+            if (validationAttempts < maxValidationAttempts) {
+              continue
+            }
+          }
+          
+          throw new Error(`Sandbox is not running (state: ${sandbox.state}). Cannot execute command.`)
+        }
+        
+        // Execute the command
+        const result = await sandbox.process.executeCommand(
+          request.command
+        )
+
+        const actualDuration = Date.now() - startTime
+
+        const response: ExecuteCommandResponse = {
+          exitCode: result.exitCode || 0,
+          stdout: result.artifacts?.stdout || result.result || '',
+          stderr: '', // SDK might not provide stderr - using empty string for now
+          duration: actualDuration
+        }
+
+        logWithContext('DAYTONA_CLIENT', 'Command execution completed via SDK with validation', {
           sandboxId,
-          currentState: sandbox.state
+          exitCode: response.exitCode,
+          stdoutLength: response.stdout.length,
+          stderrLength: response.stderr.length,
+          duration: response.duration,
+          validationAttempts
         })
-        throw new Error(`Sandbox is not running (state: ${sandbox.state}). Cannot execute command.`)
-      }
-      
-      const result = await sandbox.process.executeCommand(
-        request.command
-      )
 
-      const actualDuration = Date.now() - startTime
-
-      const response: ExecuteCommandResponse = {
-        exitCode: result.exitCode || 0,
-        stdout: result.artifacts?.stdout || result.result || '',
-        stderr: '', // SDK might not provide stderr - using empty string for now
-        duration: actualDuration
-      }
-
-      logWithContext('DAYTONA_CLIENT', 'Command execution completed via SDK', {
-        sandboxId,
-        exitCode: response.exitCode,
-        stdoutLength: response.stdout.length,
-        stderrLength: response.stderr.length,
-        duration: response.duration
-      })
-
-      return response
-    } catch (error) {
-      const errorMessage = (error as Error).message
-      
-      logWithContext('DAYTONA_CLIENT', 'Error executing command via SDK', {
-        sandboxId,
-        error: errorMessage
-      })
-      
-      // Provide more specific error messages for common issues
-      if (errorMessage.includes('not found') || errorMessage.includes('does not exist')) {
-        throw new Error(`Sandbox ${sandboxId} not found. It may have been removed from Daytona platform.`)
-      } else if (errorMessage.includes('not running') || errorMessage.includes('STOPPED')) {
-        throw new Error(`Sandbox ${sandboxId} is not running. Please start it first.`)
-      } else {
-        throw new Error(`Failed to execute command: ${errorMessage}`)
+        return response
+        
+      } catch (error) {
+        const errorMessage = (error as Error).message
+        
+        logWithContext('DAYTONA_CLIENT', `Error executing command via SDK (attempt ${validationAttempts}/${maxValidationAttempts})`, {
+          sandboxId,
+          error: errorMessage,
+          validationAttempts
+        })
+        
+        // Check if this is a recoverable error on early attempts
+        const isRecoverableError = (errorMessage.includes('not found') || 
+                                    errorMessage.includes('does not exist') ||
+                                    errorMessage.includes('STARTING')) &&
+                                   validationAttempts < maxValidationAttempts
+        
+        if (isRecoverableError) {
+          logWithContext('DAYTONA_CLIENT', 'Detected recoverable error - waiting before retry', {
+            sandboxId,
+            error: errorMessage,
+            attempt: validationAttempts
+          })
+          await new Promise(resolve => setTimeout(resolve, 3000)) // Wait 3 seconds
+          continue
+        }
+        
+        // Provide more specific error messages for common issues
+        if (errorMessage.includes('not found') || errorMessage.includes('does not exist')) {
+          throw new Error(`Sandbox ${sandboxId} not found. It may have been removed from Daytona platform.`)
+        } else if (errorMessage.includes('not running') || errorMessage.includes('STOPPED')) {
+          throw new Error(`Sandbox ${sandboxId} is not running. Please start it first.`)
+        } else {
+          throw new Error(`Failed to execute command after ${validationAttempts} validation attempts: ${errorMessage}`)
+        }
       }
     }
+    
+    throw new Error(`Failed to execute command after ${maxValidationAttempts} validation attempts`)
   }
 
   /**
@@ -450,7 +494,7 @@ export class DaytonaClient {
   }
 
   /**
-   * Clone repository using git operations
+   * Clone repository using git operations with enhanced validation
    */
   async cloneRepository(
     sandboxId: string,
@@ -458,11 +502,25 @@ export class DaytonaClient {
     workspaceDir: string,
     authToken: string
   ): Promise<ExecuteCommandResponse> {
-    logWithContext('DAYTONA_CLIENT', 'Cloning repository via SDK', {
+    logWithContext('DAYTONA_CLIENT', 'Cloning repository via SDK with enhanced validation', {
       sandboxId,
       gitUrl,
       workspaceDir
     })
+
+    // First verify sandbox is accessible and running
+    try {
+      const sandbox = await this.getSandbox(sandboxId)
+      if (sandbox.status !== 'running') {
+        throw new Error(`Sandbox ${sandboxId} is not running (status: ${sandbox.status}). Cannot clone repository.`)
+      }
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Sandbox validation failed before clone', {
+        sandboxId,
+        error: (error as Error).message
+      })
+      throw new Error(`Sandbox validation failed before clone: ${(error as Error).message}`)
+    }
 
     // Create the workspace directory and clone the repo
     const cloneCommand = `mkdir -p ${workspaceDir} && cd ${workspaceDir} && git clone https://x-access-token:${authToken}@${gitUrl.replace('https://', '')} .`
@@ -473,15 +531,31 @@ export class DaytonaClient {
         workingDirectory: '/'
       })
 
-      logWithContext('DAYTONA_CLIENT', 'Repository cloned successfully', {
+      // Verify clone was successful
+      if (response.exitCode !== 0) {
+        throw new Error(`Git clone command failed with exit code ${response.exitCode}. Output: ${response.stdout}`)
+      }
+
+      // Additional validation - check if directory was created
+      const verifyResponse = await this.executeCommand(sandboxId, {
+        command: `test -d ${workspaceDir} && echo "Directory exists" || echo "Directory missing"`,
+        workingDirectory: '/'
+      })
+      
+      if (!verifyResponse.stdout.includes('Directory exists')) {
+        throw new Error(`Repository cloning appeared successful but workspace directory ${workspaceDir} was not created`)
+      }
+
+      logWithContext('DAYTONA_CLIENT', 'Repository cloned and verified successfully', {
         sandboxId,
         exitCode: response.exitCode,
-        stdoutLength: response.stdout.length
+        stdoutLength: response.stdout.length,
+        workspaceVerified: true
       })
 
       return response
     } catch (error) {
-      logWithContext('DAYTONA_CLIENT', 'Error cloning repository', {
+      logWithContext('DAYTONA_CLIENT', 'Error cloning repository with validation', {
         sandboxId,
         error: (error as Error).message
       })
