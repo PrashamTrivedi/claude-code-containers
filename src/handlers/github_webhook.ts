@@ -160,7 +160,7 @@ async function verifyGitHubSignature(payload: string, signature: string, secret:
 }
 
 // Main webhook processing handler
-export async function handleGitHubWebhook(request: Request, env: any): Promise<Response> {
+export async function handleGitHubWebhook(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
   const startTime = Date.now()
 
   try {
@@ -280,18 +280,46 @@ export async function handleGitHubWebhook(request: Request, env: any): Promise<R
       processingTimeMs: Date.now() - startTime
     })
 
-    const eventResponse = await routeWebhookEvent(event, webhookData, env)
+    // Use ctx.waitUntil() to process webhook asynchronously to avoid timeout
+    const processingPromise = routeWebhookEvent(event, webhookData, env)
+      .then((eventResponse) => {
+        const processingTime = Date.now() - startTime
+        logWithContext('WEBHOOK', 'Step 4 COMPLETE: Webhook processing completed successfully', {
+          event,
+          delivery,
+          processingTimeMs: processingTime,
+          responseStatus: eventResponse.status,
+          responseStatusText: eventResponse.statusText
+        })
+        return eventResponse
+      })
+      .catch((error) => {
+        const processingTime = Date.now() - startTime
+        logWithContext('WEBHOOK', 'ASYNC ERROR: Webhook processing failed in background', {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          event,
+          delivery,
+          processingTimeMs: processingTime
+        })
+      })
 
-    const processingTime = Date.now() - startTime
-    logWithContext('WEBHOOK', 'Step 4 COMPLETE: Webhook processing completed successfully', {
+    // Let the processing continue in the background
+    ctx.waitUntil(processingPromise)
+
+    // Return immediate acknowledgment to GitHub
+    logWithContext('WEBHOOK', 'Webhook acknowledged - processing continues in background', {
       event,
       delivery,
-      processingTimeMs: processingTime,
-      responseStatus: eventResponse.status,
-      responseStatusText: eventResponse.statusText
+      acknowledgmentTimeMs: Date.now() - startTime
     })
 
-    return eventResponse
+    return new Response('Webhook received and processing started', { 
+      status: 202,  // 202 Accepted
+      headers: {
+        'Content-Type': 'text/plain'
+      }
+    })
 
   } catch (error) {
     const processingTime = Date.now() - startTime

@@ -315,7 +315,8 @@ export default {
       GITHUB_CONFIG: KVNamespace
       DAYTONA_API_KEY?: string
       DAYTONA_API_URL?: string
-    }
+    },
+    ctx: ExecutionContext
   ): Promise<Response> {
     const startTime = Date.now()
     const url = new URL(request.url)
@@ -389,7 +390,7 @@ export default {
       else if (pathname === '/webhooks/github') {
         logWithContext('MAIN_HANDLER', 'Routing to GitHub webhook handler')
         routeMatched = true
-        response = await handleGitHubWebhook(request, env)
+        response = await handleGitHubWebhook(request, env, ctx)
       }
 
       // Daytona sandbox routes
@@ -516,7 +517,7 @@ export default {
             body: JSON.stringify(mockWebhookPayload)
           })
 
-          const webhookResponse = await handleGitHubWebhook(mockRequest, env)
+          const webhookResponse = await handleGitHubWebhook(mockRequest, env, ctx)
           
           response = new Response(`
 <!DOCTYPE html>

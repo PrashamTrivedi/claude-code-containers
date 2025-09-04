@@ -166,6 +166,41 @@ export class DaytonaClient {
   }
 
   /**
+   * Find sandbox by issue ID using labels
+   */
+  async findSandboxByIssueId(issueId: string): Promise<DaytonaSandbox | null> {
+    logWithContext('DAYTONA_CLIENT', 'Finding sandbox by issue ID via SDK', {issueId})
+
+    try {
+      const sandboxes = await this.listSandboxes()
+      
+      // Look for sandbox with issueId in the name (format: claude-issue-{issueId})
+      const matchingSandbox = sandboxes.find(sandbox => 
+        sandbox.name === `claude-issue-${issueId}`
+      )
+
+      if (matchingSandbox) {
+        logWithContext('DAYTONA_CLIENT', 'Found sandbox by issue ID', {
+          issueId,
+          sandboxId: matchingSandbox.id,
+          sandboxName: matchingSandbox.name,
+          status: matchingSandbox.status
+        })
+        return matchingSandbox
+      }
+
+      logWithContext('DAYTONA_CLIENT', 'No sandbox found for issue ID', {issueId})
+      return null
+    } catch (error) {
+      logWithContext('DAYTONA_CLIENT', 'Error finding sandbox by issue ID via SDK', {
+        issueId,
+        error: (error as Error).message
+      })
+      throw new Error(`Failed to find sandbox by issue ID: ${(error as Error).message}`)
+    }
+  }
+
+  /**
    * Start a sandbox
    */
   async startSandbox(sandboxId: string): Promise<DaytonaSandbox> {
@@ -270,7 +305,7 @@ export class DaytonaClient {
       const response: ExecuteCommandResponse = {
         exitCode: result.exitCode || 0,
         stdout: result.artifacts?.stdout || result.result || '',
-        stderr: result.artifacts?.stderr || '', // Check for separate stderr
+        stderr: '', // SDK might not provide stderr - using empty string for now
         duration: actualDuration
       }
 
@@ -430,11 +465,8 @@ export class DaytonaClient {
       prompt
     })
 
-    // Base64 encode the prompt using modern Web API
-    const messageBase64 = btoa(prompt)
-
     // Execute Claude CLI with the exact required format
-    const claudeCommand = `claude --dangerously-skip-permissions -p \"${prompt}\" --output-format json`
+    const claudeCommand = `claude --dangerously-skip-permissions -p "${prompt}" --output-format json`
 
     try {
       const response = await this.executeCommand(sandboxId, {

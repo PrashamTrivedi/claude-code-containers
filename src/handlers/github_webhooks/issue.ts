@@ -96,12 +96,15 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
   })
 
   try {
-    // Step 1: Create Daytona sandbox for the issue
-    logWithContext('CLAUDE_ROUTING', 'Creating Daytona sandbox for issue processing', {
+    // Step 1: Check for existing sandbox or create new one
+    logWithContext('CLAUDE_ROUTING', 'Checking for existing sandbox or creating new one for issue', {
       sandboxName,
       issueId: issue.id.toString()
     })
 
+    // The create endpoint now handles reuse logic internally - it will:
+    // - Find existing sandbox by issue ID
+    // - Reuse if running, restart if stopped, create new if none found
     const createResponse = await sandboxManager.fetch(new Request('http://internal/create', {
       method: 'POST',
       headers: {
@@ -121,26 +124,26 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
     }))
 
     if (!createResponse.ok) {
-      const errorText = await createResponse.text().catch(() => 'Unable to read sandbox creation error')
-      logWithContext('CLAUDE_ROUTING', 'Sandbox creation failed', {
+      const errorText = await createResponse.text().catch(() => 'Unable to read sandbox setup error')
+      logWithContext('CLAUDE_ROUTING', 'Sandbox setup failed', {
         status: createResponse.status,
         errorText
       })
-      throw new Error(`Sandbox creation failed with status ${createResponse.status}: ${errorText}`)
+      throw new Error(`Sandbox setup failed with status ${createResponse.status}: ${errorText}`)
     }
 
     const createResult = await createResponse.json()
 
     if (!createResult.success) {
-      logWithContext('CLAUDE_ROUTING', 'Sandbox creation unsuccessful', {
+      logWithContext('CLAUDE_ROUTING', 'Sandbox setup unsuccessful', {
         error: createResult.error
       })
-      throw new Error(`Sandbox creation failed: ${createResult.error}`)
+      throw new Error(`Sandbox setup failed: ${createResult.error}`)
     }
 
     const sandboxId = createResult.sandboxId
 
-    logWithContext('CLAUDE_ROUTING', 'Sandbox created successfully', {
+    logWithContext('CLAUDE_ROUTING', 'Sandbox ready (created or reused)', {
       sandboxId,
       sandboxName
     })

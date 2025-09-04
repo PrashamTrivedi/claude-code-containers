@@ -192,6 +192,9 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         case '/get-changes':
           return this.handleGetChanges(request)
 
+        case '/find-by-issue-id':
+          return this.handleFindByIssueId(request)
+
         default:
           return Response.json({
             success: false,
@@ -212,12 +215,65 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * Create a new sandbox
+   * Find sandbox by issue ID from stored state and Daytona API
+   */
+  private async findSandboxByIssueId(issueId: string): Promise<DaytonaSandbox | null> {
+    logWithContext('SANDBOX_MANAGER_DO', 'Finding sandbox by issue ID', {issueId})
+
+    try {
+      // First, check our stored state for matching issueId
+      for (const [sandboxId, state] of this.sandboxes.entries()) {
+        if (state.issueId === issueId) {
+          logWithContext('SANDBOX_MANAGER_DO', 'Found sandbox in stored state', {
+            issueId,
+            sandboxId,
+            status: state.status
+          })
+          
+          // Verify the sandbox still exists in Daytona and get current status
+          try {
+            const currentSandbox = await this.daytonaClient!.getSandbox(sandboxId)
+            
+            // Update our stored state with current status
+            state.status = currentSandbox.status
+            state.lastUpdated = currentSandbox.updated
+            this.sandboxes.set(sandboxId, state)
+            await this.saveSandboxState()
+            
+            return currentSandbox
+          } catch (error) {
+            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox in stored state no longer exists in Daytona', {
+              issueId,
+              sandboxId,
+              error: (error as Error).message
+            })
+            
+            // Remove from stored state since it no longer exists
+            this.sandboxes.delete(sandboxId)
+            await this.saveSandboxState()
+          }
+        }
+      }
+      
+      // If not found in stored state, use Daytona client to search by name pattern
+      return await this.daytonaClient!.findSandboxByIssueId(issueId)
+      
+    } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error finding sandbox by issue ID', {
+        issueId,
+        error: (error as Error).message
+      })
+      return null
+    }
+  }
+
+  /**
+   * Create a new sandbox or reuse existing one for issue
    */
   private async handleCreateSandbox(request: Request): Promise<Response> {
     const createRequest: CreateSandboxDORequest = await request.json()
 
-    logWithContext('SANDBOX_MANAGER_DO', 'Creating sandbox', {
+    logWithContext('SANDBOX_MANAGER_DO', 'Processing sandbox creation request', {
       name: createRequest.name,
       projectName: createRequest.projectName,
       gitUrl: createRequest.gitUrl,
@@ -225,8 +281,164 @@ export class DaytonaSandboxManagerDO extends DurableObject {
     })
 
     try {
+      // Check for existing sandbox if issueId is provided
+      if (createRequest.issueId) {
+        logWithContext('SANDBOX_MANAGER_DO', 'Checking for existing sandbox for issue', {
+          issueId: createRequest.issueId
+        })
+        
+        const existingSandbox = await this.findSandboxByIssueId(createRequest.issueId)
+        
+        if (existingSandbox) {
+          logWithContext('SANDBOX_MANAGER_DO', 'Found existing sandbox for issue', {
+            issueId: createRequest.issueId,
+            sandboxId: existingSandbox.id,
+            status: existingSandbox.status
+          })
+          
+          // Handle different sandbox states
+          switch (existingSandbox.status) {
+            case 'running':
+              logWithContext('SANDBOX_MANAGER_DO', 'Existing sandbox is running, reusing it', {
+                sandboxId: existingSandbox.id
+              })
+              
+              // Update stored state with current info
+              const runningState: SandboxState = {
+                sandboxId: existingSandbox.id,
+                name: existingSandbox.name,
+                status: existingSandbox.status,
+                projectName: existingSandbox.projectName,
+                gitUrl: existingSandbox.gitUrl || createRequest.gitUrl,
+                created: existingSandbox.created,
+                lastUpdated: existingSandbox.updated,
+                issueId: createRequest.issueId,
+                repositoryName: createRequest.repositoryName
+              }
+              
+              this.sandboxes.set(existingSandbox.id, runningState)
+              await this.saveSandboxState()
+              
+              return Response.json({
+                success: true,
+                data: existingSandbox,
+                sandboxId: existingSandbox.id
+              } as SandboxManagerResponse<DaytonaSandbox>)
+              
+            case 'stopped':
+              logWithContext('SANDBOX_MANAGER_DO', 'Existing sandbox is stopped, restarting it', {
+                sandboxId: existingSandbox.id
+              })
+              
+              try {
+                // Restart the existing sandbox
+                await this.daytonaClient!.startSandbox(existingSandbox.id)
+                
+                // Wait for it to be running
+                const runningSandbox = await this.daytonaClient!.waitForSandboxStatus(
+                  existingSandbox.id,
+                  'running',
+                  180000, // 3 minutes timeout
+                  3000    // 3 second polling
+                )
+                
+                // Update stored state
+                const restartedState: SandboxState = {
+                  sandboxId: runningSandbox.id,
+                  name: runningSandbox.name,
+                  status: runningSandbox.status,
+                  projectName: runningSandbox.projectName,
+                  gitUrl: runningSandbox.gitUrl || createRequest.gitUrl,
+                  created: runningSandbox.created,
+                  lastUpdated: runningSandbox.updated,
+                  issueId: createRequest.issueId,
+                  repositoryName: createRequest.repositoryName
+                }
+                
+                this.sandboxes.set(runningSandbox.id, restartedState)
+                await this.saveSandboxState()
+                
+                logWithContext('SANDBOX_MANAGER_DO', 'Sandbox restarted successfully', {
+                  sandboxId: runningSandbox.id,
+                  status: runningSandbox.status
+                })
+                
+                return Response.json({
+                  success: true,
+                  data: runningSandbox,
+                  sandboxId: runningSandbox.id
+                } as SandboxManagerResponse<DaytonaSandbox>)
+                
+              } catch (restartError) {
+                logWithContext('SANDBOX_MANAGER_DO', 'Failed to restart existing sandbox, will create new one', {
+                  sandboxId: existingSandbox.id,
+                  error: (restartError as Error).message
+                })
+                
+                // Remove failed sandbox from state and fall through to create new one
+                this.sandboxes.delete(existingSandbox.id)
+                await this.saveSandboxState()
+              }
+              break
+              
+            case 'creating':
+            case 'stopping':
+              // Wait for current operation to complete, then check again
+              logWithContext('SANDBOX_MANAGER_DO', 'Existing sandbox is in transition state, waiting', {
+                sandboxId: existingSandbox.id,
+                status: existingSandbox.status
+              })
+              
+              try {
+                // Wait a bit for the transition to complete
+                await new Promise(resolve => setTimeout(resolve, 5000))
+                const updatedSandbox = await this.daytonaClient!.getSandbox(existingSandbox.id)
+                
+                if (updatedSandbox.status === 'running') {
+                  logWithContext('SANDBOX_MANAGER_DO', 'Transition completed, sandbox is now running', {
+                    sandboxId: updatedSandbox.id
+                  })
+                  return Response.json({
+                    success: true,
+                    data: updatedSandbox,
+                    sandboxId: updatedSandbox.id
+                  } as SandboxManagerResponse<DaytonaSandbox>)
+                }
+              } catch (error) {
+                logWithContext('SANDBOX_MANAGER_DO', 'Failed to wait for transition, will create new sandbox', {
+                  error: (error as Error).message
+                })
+              }
+              break
+              
+            case 'failed':
+              logWithContext('SANDBOX_MANAGER_DO', 'Existing sandbox is in failed state, will create new one', {
+                sandboxId: existingSandbox.id
+              })
+              
+              // Clean up failed sandbox
+              try {
+                await this.daytonaClient!.deleteSandbox(existingSandbox.id)
+              } catch (error) {
+                logWithContext('SANDBOX_MANAGER_DO', 'Failed to cleanup failed sandbox', {
+                  error: (error as Error).message
+                })
+              }
+              
+              this.sandboxes.delete(existingSandbox.id)
+              await this.saveSandboxState()
+              break
+          }
+        }
+      }
+      
+      // Create new sandbox if no existing one found or existing one couldn't be reused
+      logWithContext('SANDBOX_MANAGER_DO', 'Creating new sandbox', {
+        name: createRequest.name,
+        projectName: createRequest.projectName
+      })
+      
       const sandbox = await this.daytonaClient!.createSandbox({
-
         name: createRequest.name,
         projectName: createRequest.projectName,
         gitUrl: createRequest.gitUrl,
@@ -265,7 +477,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
         this.sandboxes.set(sandbox.id, sandboxState)
         await this.saveSandboxState()
 
-        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox successfully started via SDK', {
+        logWithContext('SANDBOX_MANAGER_DO', 'New sandbox successfully started via SDK', {
           sandboxId: sandbox.id,
           status: runningSandbox.status
         })
@@ -290,7 +502,7 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       }
 
     } catch (error) {
-      logWithContext('SANDBOX_MANAGER_DO', 'Error creating sandbox', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error in sandbox creation process', {
         error: (error as Error).message
       })
 
@@ -565,10 +777,11 @@ Work step by step and provide clear explanations of your approach.`
       // Step 4: Execute Claude CLI
       const claudeResult = await this.daytonaClient!.executeClaudeCommand(sandbox.id, prompt)
 
+      logWithContext("CLAUDE_CODE_RESPONSE", 'Got Claude Code response', claudeResult)
       // Step 5: Check for changes
       const gitStatus = await this.daytonaClient!.getGitStatus(sandbox.id, workspaceDir)
       const hasChanges = gitStatus.stdout.trim().length > 0
-
+      logWithContext('GIT_STATUS', 'Checking git status', {gitStatus, hasChanges})
       let prSummary = 'Claude Code made changes to address the GitHub issue.'
       if (hasChanges) {
         try {
@@ -732,6 +945,59 @@ Work step by step and provide clear explanations of your approach.`
         success: false,
         error: (error as Error).message,
         sandboxId: changesRequest.sandboxId
+      } as SandboxManagerResponse, {status: 500})
+    }
+  }
+
+  /**
+   * Find sandbox by issue ID
+   */
+  private async handleFindByIssueId(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    const issueId = url.searchParams.get('issueId')
+
+    if (!issueId) {
+      return Response.json({
+        success: false,
+        error: 'issueId parameter required'
+      } as SandboxManagerResponse, {status: 400})
+    }
+
+    logWithContext('SANDBOX_MANAGER_DO', 'Finding sandbox by issue ID', {issueId})
+
+    try {
+      const sandbox = await this.findSandboxByIssueId(issueId)
+
+      if (sandbox) {
+        logWithContext('SANDBOX_MANAGER_DO', 'Found sandbox by issue ID', {
+          issueId,
+          sandboxId: sandbox.id,
+          status: sandbox.status
+        })
+        
+        return Response.json({
+          success: true,
+          data: sandbox,
+          sandboxId: sandbox.id
+        } as SandboxManagerResponse<DaytonaSandbox>)
+      } else {
+        logWithContext('SANDBOX_MANAGER_DO', 'No sandbox found for issue ID', {issueId})
+        
+        return Response.json({
+          success: true,
+          data: null
+        } as SandboxManagerResponse<null>)
+      }
+      
+    } catch (error) {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error finding sandbox by issue ID', {
+        issueId,
+        error: (error as Error).message
+      })
+
+      return Response.json({
+        success: false,
+        error: (error as Error).message
       } as SandboxManagerResponse, {status: 500})
     }
   }
