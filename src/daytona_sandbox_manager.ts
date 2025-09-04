@@ -383,33 +383,17 @@ export class DaytonaSandboxManagerDO extends DurableObject {
               
             case 'creating':
             case 'stopping':
-              // Wait for current operation to complete, then check again
-              logWithContext('SANDBOX_MANAGER_DO', 'Existing sandbox is in transition state, waiting', {
+              // Return existing sandbox immediately during transitions to avoid duplicates
+              logWithContext('SANDBOX_MANAGER_DO', 'Sandbox in transition state, returning existing', {
                 sandboxId: existingSandbox.id,
                 status: existingSandbox.status
               })
               
-              try {
-                // Wait a bit for the transition to complete
-                await new Promise(resolve => setTimeout(resolve, 5000))
-                const updatedSandbox = await this.daytonaClient!.getSandbox(existingSandbox.id)
-                
-                if (updatedSandbox.status === 'running') {
-                  logWithContext('SANDBOX_MANAGER_DO', 'Transition completed, sandbox is now running', {
-                    sandboxId: updatedSandbox.id
-                  })
-                  return Response.json({
-                    success: true,
-                    data: updatedSandbox,
-                    sandboxId: updatedSandbox.id
-                  } as SandboxManagerResponse<DaytonaSandbox>)
-                }
-              } catch (error) {
-                logWithContext('SANDBOX_MANAGER_DO', 'Failed to wait for transition, will create new sandbox', {
-                  error: (error as Error).message
-                })
-              }
-              break
+              return Response.json({
+                success: true,
+                data: existingSandbox,
+                sandboxId: existingSandbox.id
+              } as SandboxManagerResponse<DaytonaSandbox>)
               
             case 'failed':
               logWithContext('SANDBOX_MANAGER_DO', 'Existing sandbox is in failed state, will create new one', {
