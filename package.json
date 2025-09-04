@@ -18,7 +18,7 @@
 		"wrangler": "^4.30.0"
 	},
 	"dependencies": {
-		"@daytonaio/sdk": "^0.25.6",
+		"@daytonaio/sdk": "^0.26.0",
 		"@tsndr/cloudflare-worker-jwt": "^3.2.0"
 	},
 	"cloudflare": {

@@ -14,16 +14,6 @@ npm run create-daytona-snapshot    # Create Daytona snapshot for sandboxes
 
 **⚠️ Important:** Always run `npm run cf-typegen` after making changes to `wrangler.jsonc`. This regenerates the TypeScript types and updates `worker-configuration.d.ts` to match your bindings and configuration.
 
-### Wrangler CLI Commands
-
-```bash
-npx wrangler dev                    # Start local development (same as npm run dev)
-npx wrangler dev --remote          # Use remote Cloudflare resources
-npx wrangler deploy                 # Deploy to production (same as npm run deploy)
-npx wrangler login                  # Authenticate with Cloudflare
-npx wrangler versions upload        # Upload new version with preview URL
-```
-
 ## Tech Stack & Architecture
 
 This is a **Cloudflare Workers project with Daytona integration** that provides automated GitHub issue processing through Claude Code. It combines:
@@ -62,31 +52,6 @@ This is a **Cloudflare Workers project with Daytona integration** that provides 
 - **`scripts/`** - Daytona container building and snapshot creation scripts
 - **`package.json`** - Dependencies including `@daytonaio/sdk` and JWT handling
 
-### Key Wrangler Configuration Patterns
-
-```jsonc
-{
-  "compatibility_date": "2025-08-23",  // Controls API behavior and features
-  "compatibility_flags": ["nodejs_compat"], // Enable Node.js API compatibility
-  "vars": {                            // Environment variables
-    "DAYTONA_API_URL": "https://api.daytona.io",
-    "ENVIRONMENT": "development"
-  },
-  "durable_objects": {                 // Durable Object bindings
-    "bindings": [
-      { "name": "DAYTONA_SANDBOX_MANAGER", "class_name": "DaytonaSandboxManagerDO" }
-    ]
-  },
-  "kv_namespaces": [                   // KV storage for credentials
-    { "binding": "GITHUB_CONFIG", "id": "..." }
-  ]
-}
-```
-
-**After modifying bindings or vars in wrangler.jsonc:**
-1. Run `npm run cf-typegen` to update TypeScript types
-2. Check that `worker-configuration.d.ts` reflects your changes
-3. Update your `Env` interface in TypeScript code if needed
 
 ## Development Patterns
 
@@ -134,30 +99,6 @@ export default {
 - **KV Storage**: Access via `env.GITHUB_CONFIG.get(key)` for encrypted credentials
 - **Environment Variables**: Access via `env.VARIABLE_NAME`
 
-### Development Tips
-- Use `console.log()` for debugging - visible in `wrangler dev` and deployed logs
-- Workers must start within 400ms - keep imports and initialization lightweight  
-- Use `.dev.vars` for local secrets (never commit this file)
-- Test with `--remote` flag to use actual Cloudflare resources during development
-- Daytona SDK operations can be slow - use appropriate timeouts and error handling
-
-## Current Implementation Status
-
-**✅ Completed:**
-- Migration from Cloudflare Workers Containers to Daytona sandbox architecture
-- Daytona SDK integration with TypeScript client wrapper
-- Complete sandbox lifecycle management via Durable Objects
-- GitHub App Manifest setup and OAuth flow with KV storage
-- End-to-end issue processing: sandbox creation → repository cloning → Claude Code execution → change extraction
-- Comprehensive status dashboard with real-time system health monitoring
-- Secure credential storage in KV with proper encryption
-
-**🔧 Recent Architectural Changes:**
-- **Container → Daytona Migration**: Moved from `cf-containers` to Daytona SDK for better reliability and features
-- **Simplified Storage**: Replaced complex Durable Object encryption with KV storage patterns
-- **Enhanced Logging**: Improved contextual logging throughout the system with `logWithContext` utility
-
-**Important:** Daytona SDK version is pinned to `@daytonaio/sdk@0.25.6` for stability.
 
 ## Project Architecture Summary
 
