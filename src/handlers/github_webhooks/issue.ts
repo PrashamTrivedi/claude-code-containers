@@ -148,39 +148,97 @@ async function routeToClaudeCodeSandbox(issue: any, repository: any, env: any, w
       sandboxName
     })
 
-    // Step 2: Clone repository using Daytona git operations
-    logWithContext('CLAUDE_ROUTING', 'Cloning repository in sandbox')
+    // Step 2: Clone repository using Daytona git operations with retry logic
+    logWithContext('CLAUDE_ROUTING', 'Cloning repository in sandbox with retry logic')
 
-    const cloneResponse = await sandboxManager.fetch(new Request('http://internal/clone-and-setup', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        sandboxId,
-        gitUrl: repository.clone_url,
-        installationToken,
-        workspaceDir: '~/workspace'
-      })
-    }))
+    let cloneResult
+    let cloneAttempts = 0
+    const maxCloneAttempts = 2
+    
+    while (cloneAttempts < maxCloneAttempts) {
+      cloneAttempts++
+      
+      const cloneResponse = await sandboxManager.fetch(new Request('http://internal/clone-and-setup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          sandboxId,
+          gitUrl: repository.clone_url,
+          installationToken,
+          workspaceDir: '~/workspace'
+        })
+      }))
 
-    if (!cloneResponse.ok) {
-      const errorText = await cloneResponse.text().catch(() => 'Unable to read clone error')
-      logWithContext('CLAUDE_ROUTING', 'Repository cloning failed', {
-        status: cloneResponse.status,
-        errorText
-      })
-      throw new Error(`Repository cloning failed: ${errorText}`)
+      if (!cloneResponse.ok) {
+        const errorText = await cloneResponse.text().catch(() => 'Unable to read clone error')
+        logWithContext('CLAUDE_ROUTING', `Repository cloning failed (attempt ${cloneAttempts}/${maxCloneAttempts})`, {
+          status: cloneResponse.status,
+          errorText
+        })
+        
+        // If this was a 'sandbox not running' error and we have attempts left, try creating a new sandbox
+        if (cloneAttempts < maxCloneAttempts && errorText.includes('not found') || errorText.includes('not running')) {
+          logWithContext('CLAUDE_ROUTING', 'Attempting to recover with new sandbox creation due to stale state')
+          
+          // Try to create a completely new sandbox
+          const recoveryCreateResponse = await sandboxManager.fetch(new Request('http://internal/create', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              name: `${sandboxName}-recovery-${Date.now()}`,
+              projectName: repository.name,
+              gitUrl: repository.clone_url,
+              envVars: {
+                ANTHROPIC_API_KEY: claudeApiKey,
+                GITHUB_TOKEN: installationToken
+              },
+              issueId: issue.id.toString(),
+              repositoryName: repository.full_name
+            })
+          }))
+          
+          if (recoveryCreateResponse.ok) {
+            const recoveryCreateResult = await recoveryCreateResponse.json()
+            if (recoveryCreateResult.success) {
+              sandboxId = recoveryCreateResult.sandboxId
+              logWithContext('CLAUDE_ROUTING', 'Recovery sandbox created successfully', {
+                newSandboxId: sandboxId
+              })
+              continue // Retry clone with new sandbox
+            }
+          }
+        }
+        
+        if (cloneAttempts >= maxCloneAttempts) {
+          throw new Error(`Repository cloning failed after ${maxCloneAttempts} attempts: ${errorText}`)
+        }
+      } else {
+        cloneResult = await cloneResponse.json()
+        if (!cloneResult.success) {
+          if (cloneAttempts >= maxCloneAttempts) {
+            throw new Error(`Repository cloning failed: ${cloneResult.error}`)
+          }
+          logWithContext('CLAUDE_ROUTING', `Clone unsuccessful (attempt ${cloneAttempts}/${maxCloneAttempts})`, {
+            error: cloneResult.error
+          })
+          continue
+        }
+        
+        // Success!
+        break
+      }
     }
 
-    const cloneResult = await cloneResponse.json()
-    if (!cloneResult.success) {
-      throw new Error(`Repository cloning failed: ${cloneResult.error}`)
-    }
+    logWithContext('CLAUDE_ROUTING', 'Repository cloned successfully', {
+      attempts: cloneAttempts,
+      finalSandboxId: sandboxId
+    })
 
-    logWithContext('CLAUDE_ROUTING', 'Repository cloned successfully')
-
-    // Step 3: Execute Claude CLI with specific command format
+    // Step 3: Execute Claude CLI with specific command format and validation
     const prompt = `You are working on GitHub issue #${issue.number}: ${issue.title}
 
 Issue Description:
@@ -200,7 +258,20 @@ The repository has been cloned to ~/workspace directory. Please:
 
 Work step by step and provide clear explanations of your approach.`
 
-    logWithContext('CLAUDE_ROUTING', 'Executing Claude CLI with issue prompt', prompt)
+    logWithContext('CLAUDE_ROUTING', 'Executing Claude CLI with issue prompt', {sandboxId, promptLength: prompt.length})
+
+    // Validate sandbox is still running before executing Claude
+    const preExecuteStatus = await sandboxManager.fetch(new Request(`http://internal/get?sandboxId=${sandboxId}`))
+    if (preExecuteStatus.ok) {
+      const statusResult = await preExecuteStatus.json()
+      if (statusResult.success && statusResult.data?.status !== 'running') {
+        logWithContext('CLAUDE_ROUTING', 'Sandbox not running before Claude execution', {
+          sandboxId,
+          status: statusResult.data?.status
+        })
+        throw new Error(`Sandbox ${sandboxId} is not running (status: ${statusResult.data?.status})`)
+      }
+    }
 
     const executeResponse = await sandboxManager.fetch(new Request('http://internal/execute-claude', {
       method: 'POST',
@@ -217,24 +288,47 @@ Work step by step and provide clear explanations of your approach.`
       const errorText = await executeResponse.text().catch(() => 'Unable to read execution error')
       logWithContext('CLAUDE_ROUTING', 'Claude execution failed', {
         status: executeResponse.status,
-        errorText
+        errorText,
+        sandboxId
       })
       throw new Error(`Claude execution failed: ${errorText}`)
     }
 
     const executeResult = await executeResponse.json()
+    
+    if (!executeResult.success) {
+      logWithContext('CLAUDE_ROUTING', 'Claude execution unsuccessful', {
+        error: executeResult.error,
+        sandboxId
+      })
+      throw new Error(`Claude execution failed: ${executeResult.error}`)
+    }
 
-    logWithContext('CLAUDE_ROUTING', 'Claude CLI execution completed', {
+    logWithContext('CLAUDE_ROUTING', 'Claude CLI execution completed successfully', {
       success: executeResult.success,
       exitCode: executeResult.data?.exitCode,
       stdoutLength: executeResult.data?.stdout?.length || 0,
       stderrLength: executeResult.data?.stderr?.length || 0,
       stdoutPreview: executeResult.data?.stdout ? executeResult.data.stdout.substring(0, 200) : 'No stdout',
-      stderrPreview: executeResult.data?.stderr ? executeResult.data.stderr.substring(0, 200) : 'No stderr'
+      stderrPreview: executeResult.data?.stderr ? executeResult.data.stderr.substring(0, 200) : 'No stderr',
+      sandboxId
     })
 
-    // Step 4: Check for git changes
-    logWithContext('CLAUDE_ROUTING', 'Checking for file changes')
+    // Step 4: Check for git changes with validation
+    logWithContext('CLAUDE_ROUTING', 'Checking for file changes with sandbox validation')
+
+    // Validate sandbox is still accessible before checking changes
+    const preChangesStatus = await sandboxManager.fetch(new Request(`http://internal/get?sandboxId=${sandboxId}`))
+    if (preChangesStatus.ok) {
+      const statusResult = await preChangesStatus.json()
+      if (statusResult.success && statusResult.data?.status !== 'running') {
+        logWithContext('CLAUDE_ROUTING', 'Sandbox not running before changes check', {
+          sandboxId,
+          status: statusResult.data?.status
+        })
+        throw new Error(`Sandbox ${sandboxId} is not running during changes check (status: ${statusResult.data?.status})`)
+      }
+    }
 
     const changesResponse = await sandboxManager.fetch(new Request('http://internal/get-changes', {
       method: 'POST',
@@ -251,7 +345,8 @@ Work step by step and provide clear explanations of your approach.`
       const errorText = await changesResponse.text().catch(() => 'Unable to read changes error')
       logWithContext('CLAUDE_ROUTING', 'Failed to get changes', {
         status: changesResponse.status,
-        errorText
+        errorText,
+        sandboxId
       })
       throw new Error(`Failed to get changes: ${errorText}`)
     }
@@ -259,14 +354,19 @@ Work step by step and provide clear explanations of your approach.`
     const changesResult = await changesResponse.json()
 
     if (!changesResult.success) {
+      logWithContext('CLAUDE_ROUTING', 'Changes check unsuccessful', {
+        error: changesResult.error,
+        sandboxId
+      })
       throw new Error(`Failed to get changes: ${changesResult.error}`)
     }
 
     const {hasChanges, prSummary} = changesResult.data
 
-    logWithContext('CLAUDE_ROUTING', 'Changes analysis completed', {
+    logWithContext('CLAUDE_ROUTING', 'Changes analysis completed successfully', {
       hasChanges,
-      prSummaryLength: prSummary?.length || 0
+      prSummaryLength: prSummary?.length || 0,
+      sandboxId
     })
 
     // Get Claude's response from stdout (now plain text since we removed --output-format json)

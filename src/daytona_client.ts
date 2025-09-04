@@ -109,7 +109,7 @@ export class DaytonaClient {
   }
 
   /**
-   * Get sandbox by ID
+   * Get sandbox by ID with enhanced error handling
    */
   async getSandbox(sandboxId: string): Promise<DaytonaSandbox> {
     logWithContext('DAYTONA_CLIENT', 'Getting sandbox via SDK', {sandboxId})
@@ -117,7 +117,7 @@ export class DaytonaClient {
     try {
       const sandbox = await this.daytona.findOne({id: sandboxId})
 
-      return {
+      const result = {
         id: sandbox.id,
         name: sandbox.labels?.name || sandbox.id,
         status: this.mapSandboxState(sandbox.state),
@@ -127,12 +127,28 @@ export class DaytonaClient {
         created: sandbox.createdAt || new Date().toISOString(),
         updated: sandbox.updatedAt || new Date().toISOString()
       }
+
+      logWithContext('DAYTONA_CLIENT', 'Sandbox retrieved successfully via SDK', {
+        sandboxId,
+        status: result.status,
+        state: sandbox.state
+      })
+
+      return result
     } catch (error) {
+      const errorMessage = (error as Error).message
+      
       logWithContext('DAYTONA_CLIENT', 'Error getting sandbox via SDK', {
         sandboxId,
-        error: (error as Error).message
+        error: errorMessage
       })
-      throw new Error(`Failed to get sandbox: ${(error as Error).message}`)
+      
+      // Provide more specific error message for not found cases
+      if (errorMessage.includes('not found') || errorMessage.includes('does not exist')) {
+        throw new Error(`Sandbox ${sandboxId} not found. It may have been removed from Daytona platform.`)
+      } else {
+        throw new Error(`Failed to get sandbox: ${errorMessage}`)
+      }
     }
   }
 
@@ -279,13 +295,13 @@ export class DaytonaClient {
   }
 
   /**
-   * Execute a command in a sandbox
+   * Execute a command in a sandbox with enhanced error handling
    */
   async executeCommand(
     sandboxId: string,
     request: ExecuteCommandRequest
   ): Promise<ExecuteCommandResponse> {
-    logWithContext('DAYTONA_CLIENT', 'Executing command in sandbox via SDK', {
+    logWithContext('DAYTONA_CLIENT', 'Executing command in sandbox via SDK with validation', {
       sandboxId,
       command: request.command.substring(0, 100),
       workingDirectory: request.workingDirectory,
@@ -295,7 +311,18 @@ export class DaytonaClient {
     const startTime = Date.now()
 
     try {
+      // First, validate the sandbox exists and is in a good state
       const sandbox = await this.daytona.findOne({id: sandboxId})
+      
+      // Check sandbox state before executing command
+      if (sandbox.state !== 'STARTED') {
+        logWithContext('DAYTONA_CLIENT', 'Sandbox not in started state for command execution', {
+          sandboxId,
+          currentState: sandbox.state
+        })
+        throw new Error(`Sandbox is not running (state: ${sandbox.state}). Cannot execute command.`)
+      }
+      
       const result = await sandbox.process.executeCommand(
         request.command
       )
@@ -319,11 +346,21 @@ export class DaytonaClient {
 
       return response
     } catch (error) {
+      const errorMessage = (error as Error).message
+      
       logWithContext('DAYTONA_CLIENT', 'Error executing command via SDK', {
         sandboxId,
-        error: (error as Error).message
+        error: errorMessage
       })
-      throw new Error(`Failed to execute command: ${(error as Error).message}`)
+      
+      // Provide more specific error messages for common issues
+      if (errorMessage.includes('not found') || errorMessage.includes('does not exist')) {
+        throw new Error(`Sandbox ${sandboxId} not found. It may have been removed from Daytona platform.`)
+      } else if (errorMessage.includes('not running') || errorMessage.includes('STOPPED')) {
+        throw new Error(`Sandbox ${sandboxId} is not running. Please start it first.`)
+      } else {
+        throw new Error(`Failed to execute command: ${errorMessage}`)
+      }
     }
   }
 

@@ -215,10 +215,10 @@ export class DaytonaSandboxManagerDO extends DurableObject {
   }
 
   /**
-   * Find sandbox by issue ID from stored state and Daytona API
+   * Find sandbox by issue ID from stored state and Daytona API with enhanced state synchronization
    */
   private async findSandboxByIssueId(issueId: string): Promise<DaytonaSandbox | null> {
-    logWithContext('SANDBOX_MANAGER_DO', 'Finding sandbox by issue ID', {issueId})
+    logWithContext('SANDBOX_MANAGER_DO', 'Finding sandbox by issue ID with state sync', {issueId})
 
     try {
       // First, check our stored state for matching issueId
@@ -240,9 +240,15 @@ export class DaytonaSandboxManagerDO extends DurableObject {
             this.sandboxes.set(sandboxId, state)
             await this.saveSandboxState()
             
+            logWithContext('SANDBOX_MANAGER_DO', 'Verified sandbox exists and updated state', {
+              issueId,
+              sandboxId,
+              currentStatus: currentSandbox.status
+            })
+            
             return currentSandbox
           } catch (error) {
-            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox in stored state no longer exists in Daytona', {
+            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox in stored state no longer exists in Daytona - cleaning up', {
               issueId,
               sandboxId,
               error: (error as Error).message
@@ -251,12 +257,42 @@ export class DaytonaSandboxManagerDO extends DurableObject {
             // Remove from stored state since it no longer exists
             this.sandboxes.delete(sandboxId)
             await this.saveSandboxState()
+            
+            // Continue searching instead of returning null immediately
           }
         }
       }
       
-      // If not found in stored state, use Daytona client to search by name pattern
-      return await this.daytonaClient!.findSandboxByIssueId(issueId)
+      // If not found in stored state or stale references cleaned up, search Daytona directly
+      logWithContext('SANDBOX_MANAGER_DO', 'Searching Daytona platform directly for sandbox', {issueId})
+      
+      const daytonaSandbox = await this.daytonaClient!.findSandboxByIssueId(issueId)
+      
+      if (daytonaSandbox) {
+        logWithContext('SANDBOX_MANAGER_DO', 'Found sandbox in Daytona platform - updating stored state', {
+          issueId,
+          sandboxId: daytonaSandbox.id,
+          status: daytonaSandbox.status
+        })
+        
+        // Add to stored state for future reference
+        const sandboxState: SandboxState = {
+          sandboxId: daytonaSandbox.id,
+          name: daytonaSandbox.name,
+          status: daytonaSandbox.status,
+          projectName: daytonaSandbox.projectName,
+          gitUrl: daytonaSandbox.gitUrl || '',
+          created: daytonaSandbox.created,
+          lastUpdated: daytonaSandbox.updated,
+          issueId: issueId,
+          repositoryName: undefined // Will be set by caller if needed
+        }
+        
+        this.sandboxes.set(daytonaSandbox.id, sandboxState)
+        await this.saveSandboxState()
+      }
+      
+      return daytonaSandbox
       
     } catch (error) {
       logWithContext('SANDBOX_MANAGER_DO', 'Error finding sandbox by issue ID', {
@@ -446,37 +482,57 @@ export class DaytonaSandboxManagerDO extends DurableObject {
       this.sandboxes.set(sandbox.id, sandboxState)
       await this.saveSandboxState()
 
-      // Wait for sandbox to be running using SDK's waitUntilStarted
+      // Wait for sandbox to be running using SDK's waitUntilStarted with enhanced validation
       try {
-        const runningSandbox = await this.daytonaClient!.waitForSandboxStatus(
+        await this.daytonaClient!.waitForSandboxStatus(
           sandbox.id,
           'running',
           180000, // 3 minutes timeout
           3000    // 3 second polling
         )
 
-        // Update state
-        sandboxState.status = runningSandbox.status
-        sandboxState.lastUpdated = runningSandbox.updated
+        // Double-check sandbox state after waiting
+        const finalStatus = await this.daytonaClient!.getSandbox(sandbox.id)
+        
+        if (finalStatus.status !== 'running') {
+          throw new Error(`Sandbox reached status '${finalStatus.status}' instead of 'running'`)
+        }
+
+        // Update state with validated running sandbox
+        sandboxState.status = finalStatus.status
+        sandboxState.lastUpdated = finalStatus.updated
         this.sandboxes.set(sandbox.id, sandboxState)
         await this.saveSandboxState()
 
-        logWithContext('SANDBOX_MANAGER_DO', 'New sandbox successfully started via SDK', {
+        logWithContext('SANDBOX_MANAGER_DO', 'New sandbox successfully started and validated via SDK', {
           sandboxId: sandbox.id,
-          status: runningSandbox.status
+          status: finalStatus.status
         })
 
         return Response.json({
           success: true,
-          data: runningSandbox,
+          data: finalStatus,
           sandboxId: sandbox.id
         } as SandboxManagerResponse<DaytonaSandbox>)
 
       } catch (startupError) {
-        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox startup timeout or error via SDK', {
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox startup timeout or error via SDK - cleaning up', {
           sandboxId: sandbox.id,
           error: (startupError as Error).message
         })
+
+        // Clean up failed sandbox from both platform and stored state
+        try {
+          await this.daytonaClient!.deleteSandbox(sandbox.id)
+        } catch (cleanupError) {
+          logWithContext('SANDBOX_MANAGER_DO', 'Failed to cleanup failed sandbox', {
+            sandboxId: sandbox.id,
+            cleanupError: (cleanupError as Error).message
+          })
+        }
+        
+        this.sandboxes.delete(sandbox.id)
+        await this.saveSandboxState()
 
         return Response.json({
           success: false,
@@ -800,18 +856,88 @@ Work step by step and provide clear explanations of your approach.`
   }
 
   /**
-   * Clone repository and prepare workspace
+   * Clone repository and prepare workspace with enhanced state validation
    */
   private async handleCloneAndSetup(request: Request): Promise<Response> {
     const cloneRequest: CloneAndSetupRequest = await request.json()
 
-    logWithContext('SANDBOX_MANAGER_DO', 'Cloning and setting up workspace', {
+    logWithContext('SANDBOX_MANAGER_DO', 'Cloning and setting up workspace with state validation', {
       sandboxId: cloneRequest.sandboxId,
       gitUrl: cloneRequest.gitUrl
     })
 
     try {
       const workspaceDir = cloneRequest.workspaceDir || '~/workspace'
+      
+      // First, validate that the sandbox exists and is running
+      let sandbox: DaytonaSandbox
+      try {
+        sandbox = await this.daytonaClient!.getSandbox(cloneRequest.sandboxId)
+      } catch (sandboxError) {
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox not found during clone setup', {
+          sandboxId: cloneRequest.sandboxId,
+          error: (sandboxError as Error).message
+        })
+        
+        // Clean up stale reference from stored state
+        this.sandboxes.delete(cloneRequest.sandboxId)
+        await this.saveSandboxState()
+        
+        throw new Error(`Sandbox ${cloneRequest.sandboxId} not found. It may have been manually removed from Daytona platform.`)
+      }
+      
+      // Check if sandbox is in running state
+      if (sandbox.status !== 'running') {
+        logWithContext('SANDBOX_MANAGER_DO', 'Sandbox not running - attempting to start', {
+          sandboxId: cloneRequest.sandboxId,
+          currentStatus: sandbox.status
+        })
+        
+        if (sandbox.status === 'stopped') {
+          // Try to start the stopped sandbox
+          try {
+            await this.daytonaClient!.startSandbox(cloneRequest.sandboxId)
+            
+            // Wait for it to be running
+            sandbox = await this.daytonaClient!.waitForSandboxStatus(
+              cloneRequest.sandboxId,
+              'running',
+              120000, // 2 minutes timeout
+              3000    // 3 second polling
+            )
+            
+            logWithContext('SANDBOX_MANAGER_DO', 'Sandbox started successfully for clone', {
+              sandboxId: cloneRequest.sandboxId,
+              status: sandbox.status
+            })
+            
+          } catch (startError) {
+            logWithContext('SANDBOX_MANAGER_DO', 'Failed to start sandbox for clone', {
+              sandboxId: cloneRequest.sandboxId,
+              error: (startError as Error).message
+            })
+            
+            throw new Error(`Sandbox is not running and could not be started: ${(startError as Error).message}`)
+          }
+        } else {
+          throw new Error(`Sandbox is in '${sandbox.status}' state and cannot be used for cloning`)
+        }
+      }
+      
+      // Update stored state with current sandbox info
+      const storedState = this.sandboxes.get(cloneRequest.sandboxId)
+      if (storedState) {
+        storedState.status = sandbox.status
+        storedState.lastUpdated = sandbox.updated
+        this.sandboxes.set(cloneRequest.sandboxId, storedState)
+        await this.saveSandboxState()
+      }
+      
+      // Now proceed with cloning
+      logWithContext('SANDBOX_MANAGER_DO', 'Sandbox validated - proceeding with clone', {
+        sandboxId: cloneRequest.sandboxId,
+        status: sandbox.status
+      })
 
       const result = await this.daytonaClient!.cloneRepository(
         cloneRequest.sandboxId,
@@ -827,7 +953,7 @@ Work step by step and provide clear explanations of your approach.`
       } as SandboxManagerResponse)
 
     } catch (error) {
-      logWithContext('SANDBOX_MANAGER_DO', 'Error cloning repository', {
+      logWithContext('SANDBOX_MANAGER_DO', 'Error in clone and setup with enhanced validation', {
         sandboxId: cloneRequest.sandboxId,
         error: (error as Error).message
       })
