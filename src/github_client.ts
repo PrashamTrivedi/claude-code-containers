@@ -243,7 +243,7 @@ export class GitHubAPI {
       throw new Error(`Failed to create pull request: ${response.status} ${error}`);
     }
 
-    const pullRequest = await response.json();
+    const pullRequest = await response.json() as any;
     logWithContext('GITHUB_API', 'Pull request created successfully from Worker', { 
       pullRequestNumber: pullRequest.number,
       pullRequestUrl: pullRequest.html_url
@@ -272,7 +272,7 @@ export class GitHubAPI {
       throw new Error(`Failed to post issue comment: ${response.status} ${error}`);
     }
 
-    const commentData = await response.json();
+    const commentData = await response.json() as any;
     logWithContext('GITHUB_API', 'Issue comment posted successfully from Worker', { 
       commentId: commentData.id,
       commentUrl: commentData.html_url

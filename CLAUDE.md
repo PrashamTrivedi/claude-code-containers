@@ -31,10 +31,14 @@ This is a **Cloudflare Workers project with Daytona integration** that provides 
 4. Status dashboard (`/`) provides comprehensive system health monitoring
 
 **Daytona Sandbox Management:**
-- **DaytonaSandboxManagerDO** - Durable Object managing sandbox lifecycle and state
+- **DaytonaSandboxManagerDO** - Durable Object managing sandbox lifecycle and state with enhanced synchronization
+- **Enhanced State Synchronization** - Validates stored sandbox state against Daytona platform reality
+- **Automatic Recovery** - Handles scenarios where sandboxes are manually cleared or enter failed states
+- **Comprehensive Error Handling** - Multi-attempt operations with sophisticated retry logic
+- **State Validation** - Pre-operation sandbox state verification with automatic cleanup of stale references
+- **Sandbox Restart Logic** - Automatic restart of stopped sandboxes when needed for operations
 - **DaytonaClient** - TypeScript SDK wrapper for Daytona API operations
 - Sandboxes use `claude-code-env` snapshot with pre-installed development tools
-- Automatic cleanup of old/unused sandboxes to optimize resource usage
 - Complete sandbox workflow: create → clone repository → execute Claude Code → extract changes
 
 **GitHub Integration:**
@@ -117,3 +121,22 @@ This project creates an automated GitHub issue processor powered by Claude Code 
 - `src/daytona_client.ts` - TypeScript wrapper for Daytona SDK operations
 - `src/handlers/daytona_setup.ts` - Daytona credential configuration and health checking
 - `src/kv_storage.ts` - Secure credential storage and retrieval utilities
+
+## Troubleshooting
+
+### Sandbox State Issues
+
+**Manual Sandbox Clearing Recovery:**
+- If all sandboxes are manually cleared from Daytona, the system automatically detects the state mismatch
+- Stale references in stored state are cleaned up automatically during the next operation
+- New sandboxes are created seamlessly when needed
+
+**Common Error Messages:**
+- `"Sandbox is not running"` - The system will attempt to start stopped sandboxes automatically
+- `"Sandbox not found on Daytona platform"` - Indicates manual removal; system creates new sandbox
+- `"Failed to clone repository"` - Usually resolved by sandbox state validation and restart logic
+
+**State Synchronization:**
+- The system continuously validates stored sandbox state against Daytona platform reality
+- Automatic cleanup removes references to non-existent sandboxes
+- Enhanced error recovery includes multi-attempt operations with sophisticated retry logic
