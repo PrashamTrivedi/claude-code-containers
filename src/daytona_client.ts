@@ -320,13 +320,14 @@ export class DaytonaClient {
         const sandbox = await this.daytona.findOne({id: sandboxId})
         
         // Check sandbox state before executing command
-        if (sandbox.state !== 'STARTED') {
+        const sandboxState = sandbox.state as string
+        if (sandboxState !== 'STARTED') {
           logWithContext('DAYTONA_CLIENT', `Sandbox not in started state for command execution (attempt ${validationAttempts}/${maxValidationAttempts})`, {
             sandboxId,
-            currentState: sandbox.state
+            currentState: sandboxState
           })
           
-          if (sandbox.state === 'STARTING') {
+          if (sandboxState === 'STARTING') {
             // Wait for sandbox to finish starting
             logWithContext('DAYTONA_CLIENT', 'Sandbox is starting - waiting for completion', {
               sandboxId,
@@ -341,7 +342,7 @@ export class DaytonaClient {
             }
           }
           
-          throw new Error(`Sandbox is not running (state: ${sandbox.state}). Cannot execute command.`)
+          throw new Error(`Sandbox is not running (state: ${sandboxState}). Cannot execute command.`)
         }
         
         // Execute the command
