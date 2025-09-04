@@ -465,8 +465,11 @@ export class DaytonaClient {
       prompt
     })
 
-    // Execute Claude CLI with the exact required format
-    const claudeCommand = `claude --dangerously-skip-permissions -p "${prompt}" --output-format json`
+    // Escape the prompt properly for shell execution
+    const escapedPrompt = prompt.replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')
+    
+    // Execute Claude CLI without JSON format to get plain text output
+    const claudeCommand = `claude --dangerously-skip-permissions -p "${escapedPrompt}"`
 
     try {
       const response = await this.executeCommand(sandboxId, {

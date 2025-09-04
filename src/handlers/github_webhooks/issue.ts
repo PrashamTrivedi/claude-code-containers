@@ -228,7 +228,9 @@ Work step by step and provide clear explanations of your approach.`
       success: executeResult.success,
       exitCode: executeResult.data?.exitCode,
       stdoutLength: executeResult.data?.stdout?.length || 0,
-      stderrLength: executeResult.data?.stderr?.length || 0
+      stderrLength: executeResult.data?.stderr?.length || 0,
+      stdoutPreview: executeResult.data?.stdout ? executeResult.data.stdout.substring(0, 200) : 'No stdout',
+      stderrPreview: executeResult.data?.stderr ? executeResult.data.stderr.substring(0, 200) : 'No stderr'
     })
 
     // Step 4: Check for git changes
@@ -266,6 +268,17 @@ Work step by step and provide clear explanations of your approach.`
       hasChanges,
       prSummaryLength: prSummary?.length || 0
     })
+
+    // Get Claude's response from stdout (now plain text since we removed --output-format json)
+    let claudeAnalysis = ''
+    
+    if (executeResult.data?.stdout) {
+      claudeAnalysis = executeResult.data.stdout.trim()
+      logWithContext('CLAUDE_ROUTING', 'Claude analysis captured', {
+        analysisLength: claudeAnalysis.length,
+        preview: claudeAnalysis.substring(0, 200)
+      })
+    }
 
     if (hasChanges) {
       // Step 5: Create branch, commit and push changes using Daytona
@@ -411,31 +424,32 @@ However, I encountered an issue creating the pull request automatically. The cha
       // No changes made - post analysis comment
       logWithContext('CLAUDE_ROUTING', 'No changes made, posting analysis comment')
 
+      // If we still don't have Claude's analysis from stdout, check stderr or provide a default message
+      if (!claudeAnalysis && executeResult.data?.stderr) {
+        claudeAnalysis = executeResult.data.stderr
+      }
+      
+      if (!claudeAnalysis) {
+        claudeAnalysis = 'Claude Code analyzed the issue but did not provide detailed output. The analysis was completed successfully without requiring any code changes.'
+      }
+
       const analysisComment = `🤖 **Claude Code has analyzed this issue.**
 
-I've thoroughly reviewed the issue and explored the codebase, but I determined that no code changes are needed at this time. This could be because:
+${claudeAnalysis}
 
-- The issue has already been resolved
-- The issue requires clarification or more information
-- The requested change is not appropriate for the current codebase
-- The issue is a question or discussion rather than a code change
+---
 
-${executeResult.data?.stdout ? `
-
-**Analysis Details:**
-\`\`\`
-${executeResult.data.stdout.substring(0, 1000)}${executeResult.data.stdout.length > 1000 ? '...' : ''}
-\`\`\`
-` : ''}
-
-If you believe changes are still needed, please provide more details or clarify the requirements.
+**Note**: No code changes were made as part of this analysis. If you believe changes are still needed, please provide additional details or clarify the requirements.
 
 ---
 🤖 Powered by [Claude Code](https://claude.ai/code)`
 
       await githubAPI.postIssueComment(owner, repo, issue.number, analysisComment)
 
-      logWithContext('CLAUDE_ROUTING', 'Analysis comment posted successfully')
+      logWithContext('CLAUDE_ROUTING', 'Analysis comment posted successfully', {
+        analysisLength: claudeAnalysis.length,
+        hasOutput: !!claudeAnalysis
+      })
     }
 
     // Cleanup sandbox (optional - could be kept for debugging)
